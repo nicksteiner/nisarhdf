@@ -10,12 +10,12 @@ import h5py
 import scipy
 from datetime import datetime, timedelta
 import numpy as np
-import shapely.wkt
-import shapely
 import geojson
 import pyproj
 from osgeo import gdal, osr
+from scipy import optimize
 import os
+from nisarHDF import nisarOrbit
 
 
 class nisarBaseHDF():
@@ -25,9 +25,7 @@ class nisarBaseHDF():
 
     __metaclass__ = ABCMeta
 
-    def __init__(self, sar='LSAR', product='RUNW', frequency='frequencyA',
-                 productType='interferogram', polarization='HH', layer=None,
-                 productData='unwrappedPhase', bands='swaths'):
+    def __init__(self, **keywords):
         '''
         Initialize a nisar hdf parser
         Parameters
@@ -51,23 +49,19 @@ class nisarBaseHDF():
         None.
 
         '''
-        self.initTags(sar=sar,
-                      product=product,
-                      frequency=frequency,
-                      productType=productType,
-                      polarization=polarization,
-                      layer=layer,
-                      productData=productData,
-                      bands=bands)
-        # Constants
+        print(keywords)
+        self.initTags(**keywords)
+        # Constants WGS84
         self.EarthRadiusMajor = 6378137.0
         self.EarthRadiusMinor = 6356752.3142
+        self.EarthF = 1./298.257223563
         self.f = (self.EarthRadiusMajor -
                   self.EarthRadiusMinor) / self.EarthRadiusMajor
         self.cLight = 2.99792458e8
+        self.epsg = None
 
     @abstractmethod
-    def parseParams():
+    def parseParams(**keywords):
         ''' Abstract pointPlot method - define in child class. '''
         pass
 
@@ -137,34 +131,33 @@ class nisarBaseHDF():
             print(f'Could not parse science:{self.sar}:{self.product}:'
                   f'metadata:{field}:{index}')
 
-    def geodeticLL(self, x, y, z):
+    def parseDateStr(self, dateStr):
         '''
+        Parse a date str
+
         Parameters
         ----------
-        x, y, z : float
-            ECF coordinates.
+        dateStr : TYPE
+            DESCRIPTION.
 
         Returns
         -------
-        lat, lon, h: float
-            geodatic lat/lon/h.
-        '''
-        p = np.sqrt(x**2 + y**2)
-        q = np.arctan2(z * self.EarthRadiusMajor, p * self.EarthRadiusMinor)
-        esq = self.f * (2 - self.f)
-        eps = esq / (1 - esq)
-        print(self.f, esq, eps)
-        sinq3, cosq3 = np.sin(q)**3, np.cos(q)**3
+        dateAndTime : TYPE
+            DESCRIPTION.
+        date : TYPE
+            DESCRIPTION.
 
-        phi = np.arctan2(z + eps * self.EarthRadiusMinor * sinq3,
-                         p - esq * self.EarthRadiusMajor * cosq3)
-        # Comput lat/lon
-        lat = np.rad2deg(phi)
-        lon = np.rad2deg(np.arctan2(y, x))
-        # Compute height
-        v = self.EarthRadiusMajor / np.sqrt(1 - esq * np.sin(phi)**2)
-        h = (p / np.cos(phi)) - v
-        return lat, lon, h
+        '''
+        sLen = min(26, len(dateStr))
+        dateStr = dateStr[0:sLen]
+        # parse date
+        try:
+            dateAndTime = datetime.strptime(dateStr, '%Y-%m-%dT%H:%M:%S.%f')
+            date = dateAndTime.strftime('%Y-%m-%d')
+            return dateAndTime, date
+        except Exception:
+            self.printError('Could not parse date')
+            return None, None
 
     def parseRefDate(self):
         '''
@@ -175,16 +168,16 @@ class nisarBaseHDF():
         None.
 
         '''
+        image = 'reference'
+        if self.isSecondary:
+            image = 'secondary'
+        #
         dateStr = self.parseString(
-            self.h5['identification']['referenceZeroDopplerStartTime'])
-        # parse date
-        try:
-            self.datetime = datetime.strptime(dateStr, '%Y-%m-%dT%H:%M:%S.%f')
-            self.Date = self.datetime.strftime('%Y-%m-%d')
-        except Exception:
-            self.printError('Could not parse date')
+            self.h5['identification'][f'{image}ZeroDopplerStartTime'])
+        #
+        self.datetime, self.Date = self.parseDateStr(dateStr)
 
-    def openHDF(self, hdfFile):
+    def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None):
         '''
         Open hdf and save self.h5Full and truncate to self.h5
 
@@ -199,11 +192,35 @@ class nisarBaseHDF():
         '''
         if not os.path.exists(hdfFile):
             self.myerror(f'{hdfFile} does not exist')
+        # Update XMLs
+        if referenceOrbitXML is not None:
+            self.referenceOrbitXML = referenceOrbitXML
+        if secondaryOrbitXML is not None:
+            self.secondaryOrbitXML = secondaryOrbitXML
+        # Open hdf file
         self.hdfFile = hdfFile
         self.h5Full = h5py.File(hdfFile, 'r')
         # Truncate to remove tags common to all
         self.h5 = self.h5Full['science'][self.sar]
+        # Set image name
+        self.ImageName = os.path.basename(hdfFile)
+        # Parse primpary parameters.
         self.parseParams()
+
+    def getGranuleNames(self):
+        '''
+        Get the granule names
+
+        Returns
+        -------
+        None.
+
+        '''
+        procInfo = self.h5[self.product]['metadata']['processingInformation']
+        self.referenceGranule = \
+            self.parseString(procInfo['inputs']['l1ReferenceSlcGranules'])
+        self.secondaryGranule = \
+            self.parseString(procInfo['inputs']['l1SecondarySlcGranules'])
 
     def getLookDirection(self):
         '''
@@ -215,7 +232,8 @@ class nisarBaseHDF():
 
         '''
         self.LookDirection = np.array(
-            self.h5['identification']['lookDirection']).item().decode()
+            self.h5['identification']['lookDirection']).item().decode().lower()
+        self.lookSign = {'right': 1.0, 'left': -1.0}[self.LookDirection]
 
     def getSlantRange(self):
         '''
@@ -229,6 +247,9 @@ class nisarBaseHDF():
         '''
         # save bands to shorten lines
         bands = self.h5[self.product][self.bands]
+        #
+        if self.isSecondary:
+            self.printError('warning secondary slant range not correct')
         # get the actual data
         self.slantRangeData = \
             bands[self.frequency][self.productType]['slantRange']
@@ -239,7 +260,46 @@ class nisarBaseHDF():
         self.MLFarRange = self.slantRangeData[-1]
         self.MLRangePixelSize = self.slantRangeData[1] - self.slantRangeData[0]
 
-    def getZeroDopplerTime(self):
+    def getZeroDopplerTimeSecondary(self):
+        '''
+        Get zero doppler time for the secondary image
+        '''
+        earlyTime, _ = self.parseDateStr(self.parseString(
+            self.h5['identification']['secondaryZeroDopplerStartTime']))
+        #
+        # SLC first time
+        zeroTime = {'hour': 0, 'minute': 0, 'second': 0, 'microsecond': 0}
+        slcFirstZeroDopplerTime = (earlyTime - earlyTime.replace(**zeroTime)
+                                   ).total_seconds()
+        # convert to multi look time
+        self.firstZeroDopplerTime = slcFirstZeroDopplerTime + \
+            0.5 * (self.NumberAzimuthLooks - 1)/self.PRF
+        #
+        # Last zero doppler time
+        lastTime, _ = self.parseDateStr(self.parseString(
+            self.h5['identification']['secondaryZeroDopplerEndTime']))
+        #
+        # Use first earlyTime date
+        slcLastZeroDopplerTime = (lastTime - earlyTime.replace(**zeroTime)
+                                  ).total_seconds()
+        #
+        nSLCSamples = int((slcLastZeroDopplerTime -
+                           slcFirstZeroDopplerTime) * self.PRF) + 1
+        #
+        self.MLAzimuthSize = int(nSLCSamples / self.NumberAzimuthLooks)
+        #
+        self.zeroDopplerTimeDelta = self.NumberAzimuthLooks / self.PRF
+        #
+        self.lastZeroDopplerTime = self.firstZeroDopplerTime + \
+            (self.MLAzimuthSize - 1) * self.zeroDopplerTimeDelta
+        self.midZeroDopplerTime = 0.5 * (self.firstZeroDopplerTime +
+                                         self.lastZeroDopplerTime)
+        #
+        # compute the nominal time
+        self.NominalTime = str(timedelta(
+            seconds=np.around(self.firstZeroDopplerTime, decimals=5)))
+
+    def getZeroDopplerTime(self, secondary=False):
         '''
         Input y5 and return dictionary with zero Doppler spacing and
         first, middle, and last zero Doppler.
@@ -321,8 +381,12 @@ class nisarBaseHDF():
         polarization = frequency[self.productType][self.polarization]
         if self.layer is not None:
             polarization = polarization[self.layer]
-        self.MLAzimuthSize, self.MLRangeSize = \
-            polarization[self.productData].shape
+        if not self.isSecondary:
+            self.MLAzimuthSize, self.MLRangeSize = \
+                polarization[self.productData].shape
+        else:
+            self.MLRangeSize = polarization[self.productData].shape[1]
+            self.printError('Secondary size not complete')
 
     def getOrbitAndFrame(self):
         '''
@@ -337,8 +401,6 @@ class nisarBaseHDF():
         self.frame = np.array(self.h5['identification']['frameNumber']).item()
         self.orbit = \
             np.array(self.h5['identification']['absoluteOrbitNumber']).item()
-        # hack, remove when fields are populated.
-        #if self.frame == 0:
 
     def getOffsetParams(self):
         '''
@@ -401,30 +463,30 @@ class nisarBaseHDF():
         None.
 
         '''
-        # Make sure necessary params defined
-        if not hasattr(self, 'zeroDopplerTimeDelta'):
-            self.getZeroDopplerTime()
-        if offsets:
-            if not hasattr(self, 'deltaA'):
-                self.getOffsetParams()
-            singleLookDelta = self.zeroDopplerTimeDelta / self.deltaA
+        params = self.h5[self.product]['metadata']['processingInformation'][
+            'parameters']
+        if not self.isSecondary:
+            singleLookDelta = np.array(
+                params['reference']['frequencyA']['zeroDopplerTimeSpacing']
+                ).item()
         else:
-            if not hasattr(self, 'NumberAzimuthLooks'):
-                self.getNumberOfLooks()
-            singleLookDelta = \
-                self.zeroDopplerTimeDelta / self.NumberAzimuthLooks
+            singleLookDelta = np.array(
+               params['secondary']['frequencyA']['zeroDopplerTimeSpacing']
+               ).item()
         #
         # Compute the effective PRF
-
         self.PRF = 1. / singleLookDelta
 
-    def llToImageXY(self, lat, lon):
+    def lltoxy(self, lat, lon):
         '''
         Convert to lat/lon to xy
         '''
-        lltoxy = pyproj.Transformer.from_crs("EPSG:4326", f"EPSG:{self.epsg}")
-        x, y = lltoxy.transform(lat, lon)
-        return x, y
+        if not hasattr(self, 'epsg'):
+            self.getEPSG()
+        if not hasattr(self, 'lltoxyXform'):
+            self.lltoxyXform = pyproj.Transformer.from_crs("EPSG:4326",
+                                                           f"EPSG:{self.epsg}")
+        return self.lltoxyXform.transform(lat, lon)
 
     def _neighborDotProduct(self, x1, x2, x3, y1, y2, y3):
         '''
@@ -450,7 +512,7 @@ class nisarBaseHDF():
         normDot = np.abs((dxa*dxb + dya*dyb)/s1)
         return normDot
 
-    def _getRectangle(self, boundingPolygon):
+    def _getRectangle(self):
         '''
         From a bounding polygon from a NISAR HDF with vertices between corners,
         extract the polygon with only the corner vertices.
@@ -466,31 +528,17 @@ class nisarBaseHDF():
             corner points in xy coordinates.
 
         '''
-        x, y = [], []
-        tol = .1
-        tolR = 500
-        print(f'\n\t\033[1;31m Applying tolerance of {tol} s and {tolR} m to '
-              'keep in geolocation grid, remove for fixed products \033[0m\n')
-        if not hasattr(self, 'coordinateXCube'):
-            self.getXYCube()
-        for r in [self.MLNearRange+tolR, self.MLFarRange-tolR]:
-            for t in [self.firstZeroDopplerTime + tol,
-                      self.lastZeroDopplerTime - tol]:
-                x.append(self.coordinateXCube([0, t, r])[0])
-                y.append(self.coordinateYCube([0, t, r])[0])
-        #
-        # last point repeated twice in sample product
-        # lonP, latP = np.array(boundingPolygon.exterior.xy)[:, 0:-1]
-        # xx, yy = self.llToImageXY(latP, lonP)
-        # print(xx, yy)
-        # #
-        # for i in range(0, len(xx)-1):
-        #     normDot = self._neighborDotProduct(xx[i-1], xx[i], xx[i+1],
-        #                                        yy[i-1], yy[i], yy[i+1])
-        #     if normDot < .5:
-        #         x.append(xx[i])
-        #         y.append(yy[i])
-        return np.array(x), np.array(y)
+        x, y = np.zeros(4), np.zeros(4)
+        if self.epsg is None:
+            self.getEPSG()
+
+        # Compute corners
+        i = 0
+        for r in [self.MLNearRange, self.MLFarRange]:
+            for t in [self.firstZeroDopplerTime, self.lastZeroDopplerTime]:
+                x[i], y[i] = self.lltoxy(*self.RTtoLatLon(r, t, 0)[0:2])
+                i += 1
+        return x, y
 
     def _idCorners(self, x, y):
         '''
@@ -527,41 +575,48 @@ class nisarBaseHDF():
         self.corners = {'ll': (lat[ll], lon[ll]), 'lr': (lat[lr], lon[lr]),
                         'ur': (lat[ur], lon[ur]), 'ul': (lat[ul], lon[ul])}
 
+    def getEPSG(self):
+        '''
+        Get epsg
+        Returns
+        -------
+        Return epsg.
+        '''
+        self.epsg = np.array(
+            self.h5[self.product]['metadata']['geolocationGrid']['epsg']
+            ).item()
+
     def getCorners(self):
         '''
         Extract corners from bounding polygon with redudant points.
         '''
-        # Extract polygon
-        boundingPolygon = shapely.wkt.loads(np.array(
-            self.h5['identification']['boundingPolygon']).item().decode())
         # Get epsg
-        metadata = self.h5[self.product]['metadata']
-        self.epsg = np.array(metadata['geolocationGrid']['epsg']).item()
+        self.getEPSG()
         #
         # Extract minimum rectangle.
-        x, y = self._getRectangle(boundingPolygon)
+        x, y = self._getRectangle()
         #
         # Sort and id corners
         self._idCorners(x, y)
 
-    def formatStateVectors(self):
-        '''
-        Write state vectors to dict with keys that match geodat format.
+    # def formatStateVectors(self):
+    #     '''
+    #     Write state vectors to dict with keys that match geodat format.
 
-        Returns
-        -------
-        None.
+    #     Returns
+    #     -------
+    #     None.
 
-        '''
-        self.stateVectors = {}
-        self.stateVectors['NumberOfStateVectors'] = self.NumberOfStateVectors
-        self.stateVectors['TimeOfFirstStateVector'] = \
-            self.TimeOfFirstStateVector
-        self.stateVectors['StateVectorInterval'] = self.StateVectorInterval
-        for i, pos, vel in zip(range(1, len(self.position)+1),
-                               self.position, self.velocity):
-            self.stateVectors[f'SV_Pos_{i}'] = pos
-            self.stateVectors[f'SV_Vel_{i}'] = vel
+    #     '''
+    #     self.stateVectors = {}
+    #     self.stateVectors['NumberOfStateVectors'] = self.NumberOfStateVectors
+    #     self.stateVectors['TimeOfFirstStateVector'] = \
+    #         self.TimeOfFirstStateVector
+    #     self.stateVectors['StateVectorInterval'] = self.StateVectorInterval
+    #     for i, pos, vel in zip(range(1, len(self.position)+1),
+    #                            self.position, self.velocity):
+    #         self.stateVectors[f'SV_Pos_{i}'] = pos
+    #         self.stateVectors[f'SV_Vel_{i}'] = vel
 
     def getRangeErrorCorrection(self):
         '''
@@ -618,55 +673,30 @@ class nisarBaseHDF():
         '''
         self.deltaT = 0.0
 
-    def parseStateVectors(self):
+    def parseStateVectors(self, XMLOrbit=None):
         '''
-        Parse the state vectors. Store with names compatiable with geodat
-        files.
+        Setup an nisarOrbit instance to contain the state vectors
 
         Returns
         -------
-        None.
+        orbit  nisarOrbit.
+            NISAR orbit instance with state vector information
 
         '''
-        stateVectors = {}
-        # Check that state vectors don't start the day before
-        if not hasattr(self, 'datetime'):
-            self.parseRefDate(self)
-        stateVectors['date'] = self.datetime
-        # Get time array
-        time = self.parseVector('time', field='orbit')
-        #
-        # use it to compute other time related values
-        self.NumberOfStateVectors = len(time)
-        self.TimeOfFirstStateVector = time[0]
-        self.StateVectorInterval = time[1] - time[0]
-        #
-        # Error check: compute time from params and confirm matches time array
-        t = [self.TimeOfFirstStateVector +
-             self.StateVectorInterval * x for x in range(0, len(time))]
-        if np.std(t-time) > 0.0001:
-            self.printError('Non uniform state vector intervals')
-        #
-        # Get the orbit type
-        metadata = self.h5[self.product]['metadata']
-        self.stateVectorType = self.parseString(metadata['orbit']['orbitType'])
-        #
-        # Get position and velocity
-        self.position = self.parseVector('position', field='orbit')
-        self.velocity = self.parseVector('velocity', field='orbit')
-        #
-        # Create interpolationrs pos and vel for state vectors
-        for i, pos, vel in zip(range(0, 3),
-                               ['xsv', 'ysv', 'zsv'],
-                               ['vxsv', 'vysv', 'vzsv']):
-            setattr(self, pos,
-                    scipy.interpolate.RegularGridInterpolator(
-                        [time], self.position[:, i], method='quintic'))
-            setattr(self, vel,
-                    scipy.interpolate.RegularGridInterpolator(
-                        [time], self.velocity[:, i], method='quintic'))
-        # done
-        self.formatStateVectors()
+        if XMLOrbit is None:
+            if not self.isSecondary:
+                h5OrbitGroup = self.h5[self.product]['metadata']['orbit']
+            else:
+                if self.debug:
+                    self.printError('Using ref. orbit state vectors for debug')
+                    h5OrbitGroup = self.h5[self.product]['metadata']['orbit']
+                else:
+                    self.printError('Add second orbit from h5 if implemented')
+            print('oo', h5OrbitGroup)
+            orbit = nisarOrbit(h5OrbitGroup=h5OrbitGroup)
+        else:
+            orbit = nisarOrbit(XMLOrbit=XMLOrbit)
+        return orbit
 
     def getCorrectedTime(self):
         '''
@@ -710,6 +740,71 @@ class nisarBaseHDF():
                         (heightAboveEllipsoid, zeroDopplerTime, slantRange),
                         incidenceAngleData)
 
+    def getElevationAngleCube(self):
+        '''
+        Create an interpolator for the incidence angle data cube
+
+        Returns
+        -------
+        None.
+
+        '''
+        metadata = self.h5[self.product]['metadata']
+        elevationAngleData = \
+            np.array(metadata['geolocationGrid']['elevationAngle'])
+        slantRange = np.array(metadata['geolocationGrid']['slantRange'])
+        zeroDopplerTime = \
+            np.array(metadata['geolocationGrid']['zeroDopplerTime'])
+        heightAboveEllipsoid = \
+            np.array(metadata['geolocationGrid']['heightAboveEllipsoid'])
+        #
+        self.elevationAngleCube = scipy.interpolate.RegularGridInterpolator(
+                        (heightAboveEllipsoid, zeroDopplerTime, slantRange),
+                        elevationAngleData)
+
+    def computeAngles(self, slantRange, zeroDopplerTime, zWGS84,
+                      degrees=False):
+        '''
+        Compute elevation angle for slantRange, zeroDoppler, zWGS84.
+
+        Parameters
+        ----------
+        slantRange : float
+            slant range.
+        zeroDopplerTime : floate
+            zero Doppler time.
+        z : float
+            Elevation (WGS84 ellipsoid) of point .
+        degrees : TYPE, optional
+            Return values degrees. The default is False.
+
+        Returns
+        -------
+        elevationAngle : float
+            Elevation angle for point.
+        incidenceAngle : float
+            Incidence angle for point.
+
+        '''
+
+        lat, lon, z = self.RTtoLatLon(slantRange,  zeroDopplerTime, zWGS84)
+        position, velocity = self.getSatPositionAndVel(zeroDopplerTime)
+        ReH = np.linalg.norm(position)
+        #
+        if not hasattr(self, 'LLTOECEF'):
+            self.LLtoECEF = pyproj.Transformer.from_crs("EPSG:4326",
+                                                        "EPSG:4978",).transform
+        #
+        ptRadius = np.linalg.norm(self.LLtoECEF(lat, lon, z))
+        #
+        elevationAngle = np.arccos((slantRange**2 + ReH**2 - ptRadius**2) /
+                                   (2.0 * slantRange * ReH))
+        incidenceAngle = np.arcsin(np.sin(elevationAngle) * ReH/ptRadius)
+        #
+        if degrees:
+            return np.degrees(elevationAngle), np.degrees(incidenceAngle)
+        return elevationAngle, incidenceAngle
+
     def getCenterIncidenceAngle(self):
         '''
         Get center incidence angle
@@ -719,10 +814,8 @@ class nisarBaseHDF():
         None.
 
         '''
-        if not hasattr(self, 'incidenceAngleCube'):
-            self.getIncidenceAngleCube()
-        self.MLIncidenceCenter = self.incidenceAngleCube(
-            [0, self.midZeroDopplerTime, self.MLCenterRange])[0]
+        self.MLElevationAngle, self.MLIncidenceCenter = self.computeAngles(
+            self.MLCenterRange, self.midZeroDopplerTime, 0, degrees=True)
 
     def getXYCube(self):
         '''
@@ -761,20 +854,8 @@ class nisarBaseHDF():
         None.
 
         '''
-        if not hasattr(self, 'coordinateXCube'):
-            self.getXYCube()
-        #
-        # Get image center in x, y coords
-        xc = self.coordinateXCube(
-            [0, self.midZeroDopplerTime, self.MLCenterRange])[0]
-        yc = self.coordinateYCube(
-            [0, self.midZeroDopplerTime, self.MLCenterRange])[0]
-        #
-        # Make sure xytoll xform exists
-        if not hasattr(self, 'xytoll'):
-            self.getCorners()
-        #
-        self.CenterLatLon = self.xytoll(xc, yc)
+        self.CenterLatLon = self.RTtoLatLon(self.MLCenterRange,
+                                            self.midZeroDopplerTime, 0)[0:2]
 
     def getSatelliteHeight(self):
         '''
@@ -785,12 +866,15 @@ class nisarBaseHDF():
         None.
 
         '''
+        if not hasattr(self, 'ECEFtoLL'):
+            self.ECEFtoLL = pyproj.Transformer.from_crs("EPSG:4978",
+                                                        "EPSG:4326").transform
         # Get the ECEF coords
-        x = self.xsv([self.midZeroDopplerTime])[0]
-        y = self.ysv([self.midZeroDopplerTime])[0]
-        z = self.zsv([self.midZeroDopplerTime])[0]
+        x = self.orbit.xsv([self.midZeroDopplerTime])[0]
+        y = self.orbit.ysv([self.midZeroDopplerTime])[0]
+        z = self.orbit.zsv([self.midZeroDopplerTime])[0]
         # Convert to geodetic lat, lon, height above ellipsoid
-        latSat, lonSat, hSat = self.geodeticLL(x, y, z)
+        latSat, lonSat, hSat = self.ECEFtoLL(x, y, z)
         self.SpaceCraftAltitude = hSat
 
     def getOrbitPassDirection(self):
@@ -836,7 +920,7 @@ class nisarBaseHDF():
         '''
         self.geodatDict = {}
         # These are tags for the geojson properties
-        keys = ['Date', 'NominalTime', 'NumberRangeLooks',
+        keys = ['ImageName', 'Date', 'NominalTime', 'NumberRangeLooks',
                 'NumberAzimuthLooks',
                 'MLRangeSize', 'MLAzimuthSize', 'PRF', 'MLNearRange',
                 'MLCenterRange', 'MLFarRange', 'RangeErrorCorrection',
@@ -851,8 +935,8 @@ class nisarBaseHDF():
             self.geodatDict[key] = getattr(self, key)
         #
         # Now append the state vectors
-        for sv in self.stateVectors:
-            svData = self.stateVectors[sv]
+        for sv in self.orbit.stateVectors:
+            svData = self.orbit.stateVectors[sv]
             # Convert to list
             if type(svData) is np.ndarray:
                 svData = list(svData)
@@ -917,7 +1001,7 @@ class nisarBaseHDF():
                 formattedString += x
         return formattedString
 
-    def writeGeodatGeojson(self, filename=None, path='.'):
+    def writeGeodatGeojson(self, filename=None, path='.', secondary=False):
         '''
         Write a geodat geojson file
 
@@ -946,7 +1030,11 @@ class nisarBaseHDF():
         #
         if filename is None:
             filename = f'geodat{self.NumberRangeLooks}x' \
-                f'{self.NumberAzimuthLooks}.geojson'
+                    f'{self.NumberAzimuthLooks}.geojson'
+        if secondary and hasattr(self, 'secondary'):
+            filenameSecondary = filename.replace('.geojson',
+                                                 '.secondary.geojson')
+            self.secondary.writeGeodatGeojson(filename=filenameSecondary)
         #
         # Write and format the string, then write to the file
         geojsonString = self.formatGeojson(geojson.dumps(self.geodatGeojson))
@@ -1099,3 +1187,163 @@ class nisarBaseHDF():
             print(';\n; Origin, lower left corner (km) Xo  Yo\n;', file=fpOut)
             print('{self.x0/1000.:.4f} {self.y0/1000.:.4f}', file=fpOut)
             print('&', file=fpOut)
+
+    def _computeLookError(self, elook, ph, pv, position, slantRange,
+                          ReMajorZ2, ReMinorZ2):
+        '''
+        Compute look angle error for lat/lon determination
+
+        Parameters
+        ----------
+        elook : float
+            current look angle.
+        ph : 3 element vector
+            horizontal component of the unit pointing vector.
+        pv : 3 element vector
+            vertical component of the unit pointing vector..
+        position : 3 element vector
+            satellite position
+        slantRange : float
+            Slant range.
+        ReMajorZ2 : float
+            (ReMajor + z)**2.
+        ReMinorZ2 : float
+            (ReMajor + z)**2.
+        Returns
+        -------
+        delook : float
+            Look angle error.
+        t : 3 element vector
+            target location.
+        dt : 3 element vector
+            Differential position.
+
+        '''
+        #
+        # Latest pointing vector
+        p = np.sin(elook) * ph + np.cos(elook) * pv
+        #
+        # Target location using latest look pointing vector
+        t = position + slantRange * p
+        txy, tz = t[0:2], t[2]
+        #
+        # Error to minimize
+        error = 1.0 - np.dot(txy, txy) / ReMajorZ2 - (tz**2) / ReMinorZ2
+        return error, t
+
+    def SMLocateZD(self, position, velocity, slantRange, z):
+        '''
+        Based on old Soren Madsen algorithm to compute lat/lon from slant
+        range and altitude given sat positoin
+
+        Parameters
+        ----------
+        position : 3 element vector
+            Satellite ECEF coordinates.
+        velocity : 3 element vector
+            Satellite velocity.
+        slantRange : float
+            Slant range.
+        z : float
+            WGS84 elevation
+
+        Returns
+        -------
+        lat, lon, z
+            geocentric coordinates
+
+        '''
+        #
+        # Calculate the vertical unit vector
+        Rsat = np.linalg.norm(position)
+        nhat = position / Rsat
+        #
+        # Calculate the horizontal component of the unit pointing vector
+        # which is orthogonal to the velocity vector
+        ph = np.cross(velocity, nhat)
+        phhat = ph / np.linalg.norm(ph)
+        #
+        # Calculate the vertical component of the unit pointing vector
+        # which is perpendicular to the velocity vector
+        pv = np.cross(velocity, phhat)
+        pvhat = pv / np.linalg.norm(pv)
+        #
+        #  Calculate effective earth radius and satellite altitude
+        posxy, posz = position[0:2], position[2]
+        reff = np.sqrt(Rsat**2 /
+                       (np.dot(posxy, posxy) / self.EarthRadiusMajor**2 +
+                        (posz**2) / self.EarthRadiusMinor**2))
+        #
+        # Compute the approximate look angle using reff at target loc
+        temp = (Rsat**2.0 + slantRange**2 - (reff + z)**2) / \
+            (2.0 * Rsat * slantRange)
+        elook = self.lookSign * np.arccos(temp)
+        #
+        # Minimize look error function
+        ReMajorZ2 = (self.EarthRadiusMajor + z)**2
+        ReMinorZ2 = (self.EarthRadiusMinor + z)**2
+        def lookOptimize(elook, phhat, pvhat, position, slantRange,
+                         ReMajorZ2, ReMinorZ2):
+            return self._computeLookError(elook, phhat, pvhat, position,
+                                          slantRange, ReMajorZ2, ReMinorZ2)[0]
+        #
+        elook = optimize.leastsq(lookOptimize, elook,
+                                 args=(phhat, pvhat, position, slantRange,
+                                       ReMajorZ2, ReMinorZ2))[0][0]
+        #
+        # Target location using latest final pointing vector
+        # compute final values
+        p = np.sin(elook) * phhat + np.cos(elook) * pvhat
+        t = position + slantRange * p
+        #
+        return self.ECEFtoLL(*list(t))
+
+    def getSatPositionAndVel(self, zdTime):
+        '''
+        Get satellite position for given zdTime
+
+        Parameters
+        ----------
+        zdTime : float
+            Zero Doppler time
+
+        Returns
+        -------
+        None.
+
+        '''
+        position = [self.orbit.xsv([zdTime])[0],
+                    self.orbit.ysv([zdTime])[0],
+                    self.orbit.zsv([zdTime])[0]]
+        velocity = [self.orbit.vxsv([zdTime])[0],
+                    self.orbit.vysv([zdTime])[0],
+                    self.orbit.vzsv([zdTime])[0]]
+        return position, velocity
+
+    def RTtoLatLon(self, slantRange, zdTime, z):
+        '''
+        Basic R/D coords to lat lon at a point.
+
+        Parameters
+        ----------
+        slantRange : float
+            Slant range in m.
+        zdTime : float
+            zero Doppler time in s.
+        z : float
+            WGS84 elevation.
+
+        Returns
+        -------
+        lat, lon, z
+            Lat/lon/z coordinates.
+
+        '''
+        if not hasattr(self, 'ECEFtoLL'):
+            self.ECEFtoLL = pyproj.Transformer.from_crs("EPSG:4978",
+                                                        "EPSG:4326").transform
+        #
+        # User position/velocity state vector interpolation for time
+        position, velocity = self.getSatPositionAndVel(zdTime)
+        # Return lat/lon/z for slantRange, z
+        return self.SMLocateZD(position, velocity, slantRange, z)

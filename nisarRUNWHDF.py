@@ -16,7 +16,8 @@ class nisarRUNWHDF(nisarBaseHDF):
 
     def __init__(self,  sar='LSAR', product='RUNW', frequency='frequencyA',
                  productType='interferogram', polarization='HH', layer=None,
-                 productData='unwrappedPhase', bands='swaths'):
+                 productData='unwrappedPhase', bands='swaths', isSecondary=False,
+                 referenceOrbitXML=None, secondaryOrbitXML=None, debug=False):
         '''
         Instantiate nisarVel object. Possible bands are 'image', 'sigma0',
         'gamma0', or user defined.
@@ -40,7 +41,12 @@ class nisarRUNWHDF(nisarBaseHDF):
                               productType=productType,
                               polarization=polarization,
                               layer=layer,
-                              productData=productData)
+                              productData=productData,
+                              bands=bands,
+                              isSecondary=isSecondary,
+                              referenceOrbitXML=referenceOrbitXML, 
+                              secondaryOrbitXML=secondaryOrbitXML,
+                              debug=debug)
 
     def parseParams(self):
         '''
@@ -51,6 +57,7 @@ class nisarRUNWHDF(nisarBaseHDF):
         None.
 
         '''
+        self.getGranuleNames()
         self.getOrbitAndFrame()
         self.getLookDirection()
         self.parseRefDate()
@@ -60,6 +67,7 @@ class nisarRUNWHDF(nisarBaseHDF):
         self.getSize()
         self.effectivePRF()
         self.getRangeErrorCorrection()
+        self.orbit = self.parseStateVectors(XMLOrbit=self.referenceOrbitXML)
         self.getCorners()
         self.getRangeErrorCorrection()
         self.getTimeToFirstSample()
@@ -68,7 +76,47 @@ class nisarRUNWHDF(nisarBaseHDF):
         self.getSquint()
         self.getDeltaT()
         self.getCorrectedTime()
-        self.parseStateVectors()
+        self.getCenterLatLon()
+        self.getSatelliteHeight()
+        self.getOrbitPassDirection()
+        self.getWavelength()
+        self.getSingleLookPixelSize()
+        #
+        print('xxxxxxxx')
+        self.secondary = nisarRUNWHDF(isSecondary=True, secondaryOrbitXML=self.secondaryOrbitXML, debug=self.debug)
+        self.secondary.h5 = self.h5
+        self.secondary.parseSecondary()
+
+    def parseSecondary(self, secondaryOrbitXML=None):
+        '''
+        Parse all the params needed to make a geodatNRxNA.geojson file
+
+        Returns
+        -------
+        None.
+
+        '''
+        print('fffff')
+        self.ImageName = 'secondary'
+        self.getLookDirection()
+        self.parseRefDate()
+        self.getSlantRange()
+        self.effectivePRF()
+        self.getNumberOfLooks()
+        self.getZeroDopplerTimeSecondary()
+        self.getSize()
+        self.getRangeErrorCorrection()
+        print(self.secondaryOrbitXML)
+        self.orbit = self.parseStateVectors(XMLOrbit=self.secondaryOrbitXML)
+        self.getCorners()
+        self.getRangeErrorCorrection()
+        self.getTimeToFirstSample()
+        self.getSkewOffsets()
+        #
+        self.getCenterIncidenceAngle()
+        self.getSquint()
+        self.getDeltaT()
+        self.getCorrectedTime()
         self.getCenterLatLon()
         self.getSatelliteHeight()
         self.getOrbitPassDirection()
@@ -114,8 +162,11 @@ class nisarRUNWHDF(nisarBaseHDF):
                 self.maskedUnwrappedPhase[label ==
                                           self.connectedComponents] = np.nan
 
-    def writeData(self, filename, productField, includeVRT=True,
-                  includeGeojson=True, geojsonName=None, dataType='>f4',
+    def writeData(self, filename, productField, includeVRT=True, 
+                  secondary=True,
+                  includeGeojson=True,
+                  geojsonName=None, geojsonNameSecondary=None,
+                  dataType='>f4',
                   metaData=None):
         '''
 
@@ -146,7 +197,8 @@ class nisarRUNWHDF(nisarBaseHDF):
         # write geodat in same dir as filename with geodatNRxNA unless other
         if includeGeojson:
             self.writeGeodatGeojson(filename=geojsonName,
-                                    path=os.path.dirname(filename))
+                                    path=os.path.dirname(filename),
+                                    secondary=secondary)
         #
         # Write an accompanyting vrt file if requested filename.vrt
         if includeVRT:
