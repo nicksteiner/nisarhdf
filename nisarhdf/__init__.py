@@ -10,8 +10,8 @@ __all__ = ['nisarBaseHDF', 'nisarOrbit', 'nisarRUNWHDF', 'nisarGUNWHDF',
            'nisarROFFHDF']
 
 
-from nisarHDF.nisarBaseHDF import nisarBaseHDF
-from nisarHDF.nisarOrbit import nisarOrbit
-from nisarHDF.nisarRUNWHDF import nisarRUNWHDF
-from nisarHDF.nisarGUNWHDF import nisarGUNWHDF
-from nisarHDF.nisarROFFHDF import nisarROFFHDF
+from nisarhdf.nisarBaseHDF import nisarBaseHDF
+from nisarhdf.nisarOrbit import nisarOrbit
+from nisarhdf.nisarRUNWHDF import nisarRUNWHDF
+from nisarhdf.nisarGUNWHDF import nisarGUNWHDF
+from nisarhdf.nisarROFFHDF import nisarROFFHDF

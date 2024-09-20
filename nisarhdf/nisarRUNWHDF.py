@@ -5,7 +5,7 @@ Created on Thu Feb  1 10:44:13 2024
 
 @author: ian
 """
-from nisarHDF import nisarBaseHDF
+from nisarhdf import nisarBaseHDF
 import os
 import numpy as np
 import rasterio

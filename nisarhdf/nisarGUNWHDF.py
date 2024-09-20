@@ -6,7 +6,7 @@ Created on Thu Feb  1 15:21:35 2024
 @author: ian
 """
 
-from nisarHDF import nisarBaseHDF
+from nisarhdf import nisarBaseHDF
 import numpy as np
 
 

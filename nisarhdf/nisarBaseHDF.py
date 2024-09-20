@@ -15,7 +15,7 @@ import pyproj
 from osgeo import gdal, osr
 from scipy import optimize
 import os
-from nisarHDF.nisarOrbit import nisarOrbit
+from nisarhdf.nisarOrbit import nisarOrbit
 import geopandas as gpd
 
 gdal.UseExceptions()

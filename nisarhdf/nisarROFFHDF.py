@@ -5,7 +5,7 @@ Created on Mon Feb  5 08:36:38 2024
 
 @author: ian
 """
-from nisarHDF import nisarBaseHDF
+from nisarhdf import nisarBaseHDF
 from osgeo import gdal
 import os
 import numpy as np
