@@ -103,5 +103,5 @@ class nisarGUNWHDF(nisarBaseHDF):
             geoTransform = [self.x0, np.abs(self.dx), 0,
                             self.y0, 0, np.abs(self.dy)]
             self._writeVrt(f'{filename}.vrt', [filename], [productField],
-                           metaData=metaData, byteOrder=byteOrder, 
+                           metaData=metaData, byteOrder=byteOrder,
                            setSRS=True, geoTransform=geoTransform)

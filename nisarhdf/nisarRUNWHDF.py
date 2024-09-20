@@ -8,47 +8,52 @@ Created on Thu Feb  1 10:44:13 2024
 from nisarHDF import nisarBaseHDF
 import os
 import numpy as np
+import rasterio
+
 
 class nisarRUNWHDF(nisarBaseHDF):
     '''
     This class creates objects to work with nisar RUNWHDF images.
     '''
 
-    def __init__(self,  sar='LSAR', product='RUNW', frequency='frequencyA',
-                 productType='interferogram', polarization='HH', layer=None,
-                 productData='unwrappedPhase', bands='swaths', isSecondary=False,
+    def __init__(self,  sar='LSAR', frequency='frequencyA',
+                 polarization='HH', isSecondary=False,
                  referenceOrbitXML=None, secondaryOrbitXML=None, debug=False):
         '''
-        Instantiate nisarVel object. Possible bands are 'image', 'sigma0',
-        'gamma0', or user defined.
-        Parameters
-        ----------
-        imageType: str
-            imageType custom name, or image, sigma0, gamma0. If not specified
-            determined from grimp product name.
-        verbose : bool, optional
-            Increase level of informational messages. The default is True.
-        noData : scalar
-            no data value. Defaults to np.nan if not image/sigma/gamma
+       sar : str, optional
+            SAR Idendtifier (always LSAR for now). The default is 'LSAR'.
+        frequency : str, optional
+            frequency band to extract. The default is 'frequencyA'.
+        polarization : str, optional
+            Polarization. The default is 'HH'.
+        isSecondary : Boolean, optional
+            For internal use only. The default is False.
+        referenceOrbitXML : str, optional
+            XML file to override orbit in hdf The default is None.
+        secondaryOrbitXML : TYPE, optional
+            XML file for secondary orbit. The default is None
+
         Returns
         -------
         None.
+
         '''
+        print('ref orbit', referenceOrbitXML)
         nisarBaseHDF.__init__(self,
                               sar=sar,
-                              product=product,
+                              product='RUNW',
                               frequency=frequency,
-                              productType=productType,
+                              productType='interferogram',
                               polarization=polarization,
-                              layer=layer,
-                              productData=productData,
-                              bands=bands,
+                              layer=None,
+                              productData='unwrappedPhase',
+                              bands='swaths',
                               isSecondary=isSecondary,
-                              referenceOrbitXML=referenceOrbitXML, 
+                              referenceOrbitXML=referenceOrbitXML,
                               secondaryOrbitXML=secondaryOrbitXML,
                               debug=debug)
 
-    def parseParams(self):
+    def parseParams(self, secondary=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -58,16 +63,25 @@ class nisarRUNWHDF(nisarBaseHDF):
 
         '''
         self.getGranuleNames()
-        self.getOrbitAndFrame()
+        self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
         self.parseRefDate()
-        self.getSlantRange()
-        self.getZeroDopplerTime()
         self.getNumberOfLooks()
         self.getSize()
+        self.getSlantRange()
+
         self.effectivePRF()
         self.getRangeErrorCorrection()
+        if not secondary:
+            self.getZeroDopplerTime()
+        else:
+            self.ImageName = 'secondary'
+            self.getZeroDopplerTimeSecondary()
+            #
+        self.getCorrectedTime()
+        # Note if secondary, it will have been passed the reference (see below)
         self.orbit = self.parseStateVectors(XMLOrbit=self.referenceOrbitXML)
+        #
         self.getCorners()
         self.getRangeErrorCorrection()
         self.getTimeToFirstSample()
@@ -75,53 +89,49 @@ class nisarRUNWHDF(nisarBaseHDF):
         self.getCenterIncidenceAngle()
         self.getSquint()
         self.getDeltaT()
-        self.getCorrectedTime()
         self.getCenterLatLon()
         self.getSatelliteHeight()
         self.getOrbitPassDirection()
         self.getWavelength()
         self.getSingleLookPixelSize()
         #
-        print('xxxxxxxx')
-        self.secondary = nisarRUNWHDF(isSecondary=True, secondaryOrbitXML=self.secondaryOrbitXML, debug=self.debug)
-        self.secondary.h5 = self.h5
-        self.secondary.parseSecondary()
+        # If not secondary, create the secondary and parse
+        if not secondary:
+            self.secondary = \
+                nisarRUNWHDF(isSecondary=True,
+                             referenceOrbitXML=self.secondaryOrbitXML,
+                             debug=self.debug)
+            self.secondary.h5 = self.h5
+            self.secondary.parseParams(secondary=True)
+            self.secondaryDatetime = self.secondary.datetime
+            self.secondaryDate = self.secondary.datetime
+            self.dT = np.round((self.secondaryDatetime -
+                               self.datetime).total_seconds()/86400.,
+                               decimals=3)
 
-    def parseSecondary(self, secondaryOrbitXML=None):
+    def applyMask(self, maskFile):
         '''
-        Parse all the params needed to make a geodatNRxNA.geojson file
+        Apply an external mask (e.g., icemask) file
+
+        Parameters
+        ----------
+        maskFile : str
+            Path to mask file.
 
         Returns
         -------
         None.
 
         '''
-        print('fffff')
-        self.ImageName = 'secondary'
-        self.getLookDirection()
-        self.parseRefDate()
-        self.getSlantRange()
-        self.effectivePRF()
-        self.getNumberOfLooks()
-        self.getZeroDopplerTimeSecondary()
-        self.getSize()
-        self.getRangeErrorCorrection()
-        print(self.secondaryOrbitXML)
-        self.orbit = self.parseStateVectors(XMLOrbit=self.secondaryOrbitXML)
-        self.getCorners()
-        self.getRangeErrorCorrection()
-        self.getTimeToFirstSample()
-        self.getSkewOffsets()
+        if not os.path.exists(maskFile):
+            self.printError('applyMask: file ({maskFile} does not exist')
+            return
+
+        if not hasattr(self, 'maskedUnwrappedPhase'):
+            self.maskedUnwrappedPhase = self.unwrappedPhase.copy()
         #
-        self.getCenterIncidenceAngle()
-        self.getSquint()
-        self.getDeltaT()
-        self.getCorrectedTime()
-        self.getCenterLatLon()
-        self.getSatelliteHeight()
-        self.getOrbitPassDirection()
-        self.getWavelength()
-        self.getSingleLookPixelSize()
+        mask = rasterio.open(maskFile).read()[0]
+        self.maskedUnwrappedPhase[mask < 1] = np.nan
 
     def maskPhase(self, largest=True):
         '''
@@ -141,8 +151,11 @@ class nisarRUNWHDF(nisarBaseHDF):
             self.getImageData('unwrappedPhase')
         #
         #  Make a copy
-        self.maskedUnwrappedPhase = self.unwrappedPhase.copy()
+        if not hasattr(self, 'maskedUnwrappedPhase'):
+            self.maskedUnwrappedPhase = self.unwrappedPhase.copy()
         # Eliminate phases with connected component values of 0
+        print(np.sum(self.connectedComponents < 1))
+        #
         self.maskedUnwrappedPhase[self.connectedComponents < 1] = np.nan
         #
         # Retain only the larged connected compnent.
@@ -162,7 +175,7 @@ class nisarRUNWHDF(nisarBaseHDF):
                 self.maskedUnwrappedPhase[label ==
                                           self.connectedComponents] = np.nan
 
-    def writeData(self, filename, productField, includeVRT=True, 
+    def writeData(self, filename, productField, includeVRT=True,
                   secondary=True,
                   includeGeojson=True,
                   geojsonName=None, geojsonNameSecondary=None,
@@ -207,7 +220,11 @@ class nisarRUNWHDF(nisarBaseHDF):
             else:
                 byteOrder = 'LSB'
             # pixel centered, lower left corner, pixel units
-            geoTransform = [0.5, 0.5, 1., 0., 0., 1.]
-            self._writeVrt(f'{filename}.vrt', [filename], [productField],
-                           metaData=metaData, byteOrder=byteOrder,
-                           setSRS=False, geoTransform=geoTransform)
+            geoTransform = [-0.5, 1., 0., -0.5, 0., 1.]
+            self._writeVrt(f'{filename}.vrt',
+                           [os.path.basename(filename)],
+                           [productField],
+                           metaData=metaData,
+                           byteOrder=byteOrder,
+                           setSRS=False,
+                           geoTransform=geoTransform)

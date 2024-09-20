@@ -6,19 +6,17 @@ Created on Thu Feb 15 09:39:32 2024
 @author: ian
 """
 
-from abc import ABCMeta, abstractmethod
-import h5py
+# from abc import ABCMeta, abstractmethod
+# import h5py
 import scipy
-from datetime import datetime, timedelta
+from datetime import datetime
 import numpy as np
-import geojson
-import pyproj
-from osgeo import gdal, osr
-from scipy import optimize
-import os
+# import geojson
+# import pyproj
+# from osgeo import gdal, osr
+# from scipy import optimize
+# import os
 from xml.dom.minidom import parseString
-
-
 
 
 class nisarOrbit():
@@ -26,9 +24,10 @@ class nisarOrbit():
     Class to read and interpret NISAR orbit data.
     '''
 
-    __metaclass__ = ABCMeta
+#    __metaclass__ = ABCMeta
 
-    def __init__(self, h5OrbitGroup=None, XMLOrbit=None):
+    def __init__(self, h5OrbitGroup=None, XMLOrbit=None, minSVInterval=10.0,
+                 firstZeroDopplerTime=None, lastZeroDopplerTime=None):
         '''
         Init nisarOrbit. Load orbit data if provided.
         Parameters
@@ -37,12 +36,17 @@ class nisarOrbit():
             orbit group from an h5 file. The default is None.
         xmlOrbit : str, optional
             XML orbit file. The default is None.
+        minSVinterval : float, optional
+            Minimum interval for state vectors (resample as needed). The
+            default is None.
 
         Returns
         -------
         None.
 
         '''
+        self.firstZeroDopplerTime = firstZeroDopplerTime
+        self.lastZeroDopplerTime = lastZeroDopplerTime
         self.parsers = {'utc': self._parseTime, 'tai': self._parseTime,
                         'gps': self._parseTime, 'x':  self._parseFloat,
                         'y': self._parseFloat, 'z': self._parseFloat,
@@ -51,11 +55,19 @@ class nisarOrbit():
         if h5OrbitGroup is not None and XMLOrbit is not None:
             self.printError('Cannot specify both h5Orbit and xmlOrbit')
             return
-        print(h5OrbitGroup, XMLOrbit)
+        # Parse from hdf for xml
         if h5OrbitGroup is not None:
             self.parseStateVectorsH5(h5OrbitGroup)
-        if XMLOrbit is not None:
+        elif XMLOrbit is not None:
             self.parseStateVectorsXML(XMLOrbit)
+        else:
+            self.printError('No hdf for xml orbit information given')
+        #
+        # Initialize interpolators
+        self._setupSVInterpolators()
+
+        if self.StateVectorInterval > minSVInterval:
+            self._resampleStateVectors(minSVInterval)
         #
         # format
         self.formatStateVectors()
@@ -73,6 +85,77 @@ class nisarOrbit():
 
         '''
         print(f'\n\t\033[1;31m *** {msg} *** \033[0m\n')
+
+    def _resampleStateVectors(self, newSVInterval, pad=10):
+        '''
+        Resample state vectors. This should not be needed for NISAR but some
+        of the ALOS parameters have 60 second sampling, which is to coarse.
+        Resamples to something more nisar like (10 s)
+
+        Parameters
+        ----------
+        newSVinterval : float
+            New State Vector Interval.
+
+        Returns
+        -------
+        None.
+
+        '''
+        # Make sure time info is available
+        if self.firstZeroDopplerTime is None:
+            self.printError('requires zero doppler first time to resample')
+            return
+        if self.lastZeroDopplerTime is None:
+            self.printError('requires zero doppler last to resample')
+            return
+        # Compute new SV start and stop time
+        t0 = newSVInterval * np.round(
+            (self.firstZeroDopplerTime - pad * newSVInterval)/newSVInterval,
+            decimals=0)
+
+        t1 = newSVInterval * np.round(
+            (self.lastZeroDopplerTime + pad * newSVInterval)/newSVInterval,
+            decimals=0)
+        # Compute state vector time
+
+        self.time = np.arange(t0, t1 + newSVInterval, newSVInterval)
+        self.position = np.transpose(
+            [self.xsv(self.time), self.ysv(self.time), self.zsv(self.time)]
+            )
+        self.velocity = np.transpose(
+            [self.vxsv(self.time), self.vysv(self.time), self.vzsv(self.time)]
+            )
+        self.NumberOfStateVectors = len(self.time)
+        self.TimeOfFirstStateVector = self.time[0]
+        self.StateVectorInterval = self.time[1] - self.time[0]
+        # redo interpolator for new state vectors
+        self._setupSVInterpolators()
+
+    def _setupSVInterpolators(self):
+        '''
+        Setup regular grid interpolators for state vectors
+
+        Returns
+        -------
+        None.
+
+        '''
+        #
+        # Create interpolationrs pos and vel for state vectors
+        for i, pos, vel in zip(range(0, 3),
+                               ['xsv', 'ysv', 'zsv'],
+                               ['vxsv', 'vysv', 'vzsv']):
+            # regular quintic caused resampling not to agree at resampled
+            # locations where the original data were present. Legacy fixed.
+            setattr(self, pos,
+                    scipy.interpolate.RegularGridInterpolator(
+                        [self.time], self.position[:, i],
+                        method='quintic_legacy'))
+            setattr(self, vel,
+                    scipy.interpolate.RegularGridInterpolator(
+                        [self.time], self.velocity[:, i],
+                        method='quintic_legacy'))
 
     def parseStateVectorsH5(self, h5OrbitGroup):
         '''
@@ -102,17 +185,6 @@ class nisarOrbit():
         # Get position and velocity
         self.position = np.array(h5OrbitGroup['position'])
         self.velocity = np.array(h5OrbitGroup['velocity'])
-        #
-        # Create interpolationrs pos and vel for state vectors
-        for i, pos, vel in zip(range(0, 3),
-                               ['xsv', 'ysv', 'zsv'],
-                               ['vxsv', 'vysv', 'vzsv']):
-            setattr(self, pos,
-                    scipy.interpolate.RegularGridInterpolator(
-                        [self.time], self.position[:, i], method='quintic'))
-            setattr(self, vel,
-                    scipy.interpolate.RegularGridInterpolator(
-                        [self.time], self.velocity[:, i], method='quintic'))
 
     def formatStateVectors(self):
         '''
@@ -197,12 +269,13 @@ class nisarOrbit():
                                        referenceDate).total_seconds()
         self.StateVectorInterval = (sv['utc'][1] -
                                     sv['utc'][0]).total_seconds()
-        print(self.TimeOfFirstStateVector , self.StateVectorInterval)
-        #
-        # Get the orbit type
-        #self.stateVectorType = np.array(h5OrbitGroup['orbitType']
-        #                                 ).item().decode()
+        print(self.TimeOfFirstStateVector, self.StateVectorInterval)
         #
         # Get position and velocity
+        endTime = self.TimeOfFirstStateVector + \
+            self.StateVectorInterval * (self.NumberOfStateVectors)
+        self.time = np.arange(self.TimeOfFirstStateVector,
+                              endTime, self.StateVectorInterval)
         self.position = np.column_stack([sv['x'], sv['y'], sv['z']])
-        self.velocity =np.column_stack([sv['vx'], sv['vy'], sv['vz']])
+        self.velocity = np.column_stack([sv['vx'], sv['vy'], sv['vz']])
+        return

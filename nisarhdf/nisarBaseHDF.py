@@ -15,8 +15,10 @@ import pyproj
 from osgeo import gdal, osr
 from scipy import optimize
 import os
-from nisarHDF import nisarOrbit
+from nisarHDF.nisarOrbit import nisarOrbit
+import geopandas as gpd
 
+gdal.UseExceptions()
 
 class nisarBaseHDF():
     '''
@@ -177,14 +179,28 @@ class nisarBaseHDF():
         #
         self.datetime, self.Date = self.parseDateStr(dateStr)
 
-    def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None):
+    def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
+                referenceOrbit=None, secondaryOrbit=None, **keywords):
         '''
         Open hdf and save self.h5Full and truncate to self.h5
 
         Parameters
         ----------
         hdfFile : str
-            hdf file name.
+            hdf file.
+        referenceOrbitXML : str, optional
+            XML orbit file to override HDF statevectors. The default is None.
+        secondaryOrbitXML : str, optional
+            XML orbit file to override HDF statevectors.. The default is None.
+        referenceOrbit : int, optional
+            Override secondary orbit in HDF (used in development where missing
+            in hdf). The default is None.
+        secondaryOrbit : int, optional
+            Override secondary orbit in HDF (used in development where missing
+            in hdf). The default is None.
+        **keywords : TYPE
+            keywords to pass to parse params.
+
         Returns
         -------
         None.
@@ -193,10 +209,12 @@ class nisarBaseHDF():
         if not os.path.exists(hdfFile):
             self.myerror(f'{hdfFile} does not exist')
         # Update XMLs
-        if referenceOrbitXML is not None:
-            self.referenceOrbitXML = referenceOrbitXML
-        if secondaryOrbitXML is not None:
-            self.secondaryOrbitXML = secondaryOrbitXML
+        for attr, value in zip(['referenceOrbitXML', 'secondaryOrbitXML'],
+                               [referenceOrbitXML, secondaryOrbitXML]):
+            if value is not None:
+                setattr(self, attr, value)
+            else:
+                setattr(self, attr, None)
         # Open hdf file
         self.hdfFile = hdfFile
         self.h5Full = h5py.File(hdfFile, 'r')
@@ -204,8 +222,10 @@ class nisarBaseHDF():
         self.h5 = self.h5Full['science'][self.sar]
         # Set image name
         self.ImageName = os.path.basename(hdfFile)
-        # Parse primpary parameters.
-        self.parseParams()
+        # Parse primary parameters.
+        self.parseParams(referenceOrbit=referenceOrbit,
+                         secondaryOrbit=secondaryOrbit,
+                         **keywords)
 
     def getGranuleNames(self):
         '''
@@ -246,19 +266,27 @@ class nisarBaseHDF():
 
         '''
         # save bands to shorten lines
-        bands = self.h5[self.product][self.bands]
+        metadata = self.h5[self.product]['metadata']
+        parameters = metadata['processingInformation']['parameters']
         #
-        if self.isSecondary:
-            self.printError('warning secondary slant range not correct')
-        # get the actual data
-        self.slantRangeData = \
-            bands[self.frequency][self.productType]['slantRange']
-        # Near, middle and far
-        self.MLNearRange = self.slantRangeData[0]
-        self.MLCenterRange = (self.slantRangeData[0] +
-                              self.slantRangeData[-1]) * 0.5
-        self.MLFarRange = self.slantRangeData[-1]
-        self.MLRangePixelSize = self.slantRangeData[1] - self.slantRangeData[0]
+        if not self.isSecondary:
+            imageParams = parameters['reference']['frequencyA']
+        else:
+            imageParams = parameters['secondary']['frequencyA']
+        #
+        # Get near range and SLC spacing
+        SLCNearRange = np.array(imageParams['slantRangeStart']).item()
+        SLCSpacing = np.array(imageParams['slantRangeSpacing']).item()
+        #
+        # Compute near, middle, and far range for ML coordinates
+        self.MLNearRange = \
+            SLCNearRange + SLCSpacing * (self.NumberRangeLooks - 1) * 0.5
+        self.MLFarRange = self.MLNearRange + (self.MLRangeSize - 1) * \
+            SLCSpacing * self.NumberRangeLooks
+        self.MLCenterRange = (self.MLNearRange + self.MLFarRange) * 0.5
+        # Compute ML pixel size
+        self.MLRangePixelSize = SLCSpacing * self.NumberRangeLooks
+        print(self.MLNearRange)
 
     def getZeroDopplerTimeSecondary(self):
         '''
@@ -349,6 +377,25 @@ class nisarBaseHDF():
                 'numberOfAzimuthLooks']
             ).item()
 
+    def getSingleLookPixelSizeOffsets(self):
+        '''
+        Get the single look pixel size
+
+        Returns
+        -------
+        None.
+
+        '''
+        productType = \
+            self.h5[self.product][self.bands][self.frequency][self.productType]
+        #
+        self.SLCAzimuthPixelSize = np.array(
+            productType['sceneCenterAlongTrackSpacing']
+            ).item() / self.deltaA
+        # Range
+        self.SLCRangePixelSize = np.array(productType['slantRangeSpacing']
+                                          ).item() / self.deltaR
+
     def getSingleLookPixelSize(self):
         '''
         Get the single look pixel size
@@ -358,17 +405,18 @@ class nisarBaseHDF():
         None.
 
         '''
-        frequency = self.h5[self.product][self.bands][self.frequency]
+        productType = \
+            self.h5[self.product][self.bands][self.frequency][self.productType]
         #
         self.MLAzimuthPixelSize = \
-            np.array(frequency['sceneCenterAlongTrackSpacing']).item()
+            np.array(productType['sceneCenterAlongTrackSpacing']).item()
         #
         self.SLCAzimuthPixelSize = \
             self.MLAzimuthPixelSize / self.NumberAzimuthLooks
         # Range
         self.SLCRangePixelSize = self.MLRangePixelSize / self.NumberRangeLooks
 
-    def getSize(self):
+    def getSize(self, offsets=False):
         '''
         Get number of looks in range and azimuth for multilook product.
 
@@ -379,16 +427,43 @@ class nisarBaseHDF():
         '''
         frequency = self.h5[self.product][self.bands][self.frequency]
         polarization = frequency[self.productType][self.polarization]
-        if self.layer is not None:
-            polarization = polarization[self.layer]
-        if not self.isSecondary:
+        if offsets:
+            if self.layer is not None:
+                polarization = polarization[self.layer]
             self.MLAzimuthSize, self.MLRangeSize = \
                 polarization[self.productData].shape
+            return
+        #
+        metadata = self.h5[self.product]['metadata']
+        parameters = metadata['processingInformation']['parameters']
+        if not self.isSecondary:
+            imageParams = parameters['reference']['frequencyA']
         else:
-            self.MLRangeSize = polarization[self.productData].shape[1]
-            self.printError('Secondary size not complete')
+            imageParams = parameters['secondary']['frequencyA']
+        # get the actual data
+        numberOfRangeSamples = \
+            np.array(imageParams['numberOfRangeSamples']).item()
+        numberOfAzimuthSamples = \
+            np.array(imageParams['numberOfAzimuthLines']).item()
+        self.MLRangeSize = int(
+            np.floor(numberOfRangeSamples / self.NumberRangeLooks))
+        self.MLAzimuthSize = int(
+            np.floor(numberOfAzimuthSamples / self.NumberAzimuthLooks))
+        # print(self.MLRangeSize, self.MLAzimuthSize)
+        # print('********')
+        # #
+        # if self.layer is not None:
+        #     polarization = polarization[self.layer]
+        # if not self.isSecondary:
+        #     self.MLAzimuthSize, self.MLRangeSize = \
+        #         polarization[self.productData].shape
+        # else:
 
-    def getOrbitAndFrame(self):
+        #     self.MLRangeSize = polarization[self.productData].shape[1]
+        #     self.printError('Secondary size not complete')
+
+    def getOrbitAndFrame(self, referenceOrbit=None,
+                         secondaryOrbit=None, frame=None):
         '''
         Get product frame and orbit.
 
@@ -398,9 +473,21 @@ class nisarBaseHDF():
 
         '''
         #
-        self.frame = np.array(self.h5['identification']['frameNumber']).item()
-        self.orbit = \
-            np.array(self.h5['identification']['absoluteOrbitNumber']).item()
+        if frame is None:
+            self.frame = np.array(self.h5['identification']['frameNumber']).item()
+        else:
+            self.frame = frame
+        #
+        if referenceOrbit is None:
+            self.referenceOrbit = \
+                np.array(self.h5['identification']['absoluteOrbitNumber']).item()
+        else:
+            self.referenceOrbit = referenceOrbit
+        #
+        if secondaryOrbit is None:
+            print("Cannot sread secondary orbit yet")
+        else:
+            self.secondaryOrbit = secondaryOrbit
 
     def getOffsetParams(self):
         '''
@@ -422,6 +509,8 @@ class nisarBaseHDF():
                 np.array(frequency['alongTrackStartPixel']).item())
         setattr(self, 'r0',
                 np.array(frequency['slantRangeStartPixel']).item())
+        #
+
 
     def getOffsetLayerParams(self, layers=['layer1', 'layer2', 'layer3']):
         '''
@@ -683,19 +772,22 @@ class nisarBaseHDF():
             NISAR orbit instance with state vector information
 
         '''
+        # print('=====', XMLOrbit, self.isSecondary, self.product)
         if XMLOrbit is None:
             if not self.isSecondary:
-                h5OrbitGroup = self.h5[self.product]['metadata']['orbit']
+                h5OrbitGroup = \
+                    self.h5[self.product]['metadata']['orbit']['reference']
             else:
-                if self.debug:
-                    self.printError('Using ref. orbit state vectors for debug')
-                    h5OrbitGroup = self.h5[self.product]['metadata']['orbit']
-                else:
-                    self.printError('Add second orbit from h5 if implemented')
-            print('oo', h5OrbitGroup)
-            orbit = nisarOrbit(h5OrbitGroup=h5OrbitGroup)
+                h5OrbitGroup = \
+                    self.h5[self.product]['metadata']['orbit']['secondary']
+            orbit = nisarOrbit(h5OrbitGroup=h5OrbitGroup,
+                               firstZeroDopplerTime=self.firstZeroDopplerTime,
+                               lastZeroDopplerTime=self.lastZeroDopplerTime)
         else:
-            orbit = nisarOrbit(XMLOrbit=XMLOrbit)
+            orbit = nisarOrbit(XMLOrbit=XMLOrbit,
+                               firstZeroDopplerTime=self.firstZeroDopplerTime,
+                               lastZeroDopplerTime=self.lastZeroDopplerTime)
+            print('orbit parsed')
         return orbit
 
     def getCorrectedTime(self):
@@ -712,11 +804,11 @@ class nisarBaseHDF():
         timeCorrection = 0.5 * (self.NumberAzimuthLooks - 1)/self.PRF
         correctedTime = self.firstZeroDopplerTime - timeCorrection
         correctedTimeString = str(timedelta(
-            seconds=np.around(correctedTime, decimals=5)))
+            seconds=np.around(correctedTime, decimals=6)))
         # get pieces
         x = [float(x) for x in correctedTimeString.split(':')]
         # format as string
-        self.CorrectedTime = f'{int(x[0]):02} {int(x[1]):02} {x[2]}'
+        self.CorrectedTime = f'{int(x[0]):02} {int(x[1]):02} {x[2]:.7f}'
 
     def getIncidenceAngleCube(self):
         '''
@@ -887,9 +979,10 @@ class nisarBaseHDF():
 
         '''
         passType = self.parseString(
-            self.h5['identification']['orbitPassDirection'])
-        self.PassType = {'ASCEND': 'Ascending',
-                         'DESCEND': 'Descending'
+            self.h5['identification']['orbitPassDirection']).lower()
+        # print(passType)
+        self.PassType = {'ascending': 'ascending',
+                         'descending': 'descending'
                          }[passType]
 
     def getWavelength(self):
@@ -933,6 +1026,9 @@ class nisarBaseHDF():
         # Get values for these keys
         for key in keys:
             self.geodatDict[key] = getattr(self, key)
+        #
+        self.geodatDict['orbit'] = self.referenceOrbit
+        self.geodatDict['frame'] = self.frame
         #
         # Now append the state vectors
         for sv in self.orbit.stateVectors:
@@ -1034,7 +1130,8 @@ class nisarBaseHDF():
         if secondary and hasattr(self, 'secondary'):
             filenameSecondary = filename.replace('.geojson',
                                                  '.secondary.geojson')
-            self.secondary.writeGeodatGeojson(filename=filenameSecondary)
+            self.secondary.writeGeodatGeojson(filename=filenameSecondary,
+                                              path=path)
         #
         # Write and format the string, then write to the file
         geojsonString = self.formatGeojson(geojson.dumps(self.geodatGeojson))
@@ -1067,8 +1164,8 @@ class nisarBaseHDF():
         setattr(self, productField, np.array(data[productField]))
 
     def _writeVrt(self, newVRTFile, sourceFiles, descriptions,
-                  byteOrder=None, bands=0, eType=gdal.GDT_Float32,
-                  geoTransform=[0.5, 0.5, 1., 0., 0., 1.], metaData=None,
+                  byteOrder=None, eType=gdal.GDT_Float32,
+                  geoTransform=[-0.5, 1., 0., -0.5, 0., 1.], metaData=None,
                   setSRS=False, noDataValue=-2.0e9):
         '''
         Write a vrt for the file. Note sourcefiles and descriptions have
@@ -1083,9 +1180,10 @@ class nisarBaseHDF():
         if os.path.exists(newVRTFile):
             os.remove(newVRTFile)
         # Create VRT
+        bands = len(sourceFiles)
         drv = gdal.GetDriverByName("VRT")
         vrt = drv.Create(newVRTFile, self.MLRangeSize, self.MLAzimuthSize,
-                         bands=bands, eType=eType)
+                         bands=0, eType=eType)
 
         vrt.SetGeoTransform(geoTransform)
         #
@@ -1108,9 +1206,11 @@ class nisarBaseHDF():
             vrt.SetMetadata(metaData)
         # Look to add bands
         for sourceFile, description, bandNumber in \
-                zip(sourceFiles, descriptions, range(1, 1 + len(sourceFiles))):
-            options = [f"SourceFilename={sourceFile}", "relativeToVRT=1",
-                       "subclass=VRTRawRasterBand", f"BYTEORDER={byteOrder}",
+                zip(sourceFiles, descriptions, range(1, bands + 1)):
+            options = [f"SourceFilename={os.path.basename(sourceFile)}",
+                       "relativeToVRT=1",
+                       "subclass=VRTRawRasterBand",
+                       f"BYTEORDER={byteOrder}",
                        bytes(0)]
             vrt.AddBand(eType, options=options)
             band = vrt.GetRasterBand(bandNumber)
@@ -1118,6 +1218,35 @@ class nisarBaseHDF():
             band.SetNoDataValue(noDataValue)
         # Close the vrt
         vrt = None
+
+    def readGeodatAsDataFrame(self, filename=None):
+        '''
+        Read Geodat files a pandas data frme
+
+        Parameters
+        ----------
+        filename : str, optional
+            Name of geodat file. The default is None, which then uses 
+            geodatNumberRangeLooksxNumberAzimuthLooks.geojson
+
+        Returns
+        -------
+        None.
+
+        '''
+        if filename is None:
+            filename = f'geodat{self.NumberRangeLooks}x' \
+                    f'{self.NumberAzimuthLooks}.geojson'
+        #
+        self.geoDF = gpd.read_file(filename)
+     
+    def geodatFieldFromDF(self, field, filename=None):
+        '''
+        Return value that matches the field key from the geodat
+        '''
+        if not hasattr(self, 'geoDF'):
+            self.readGeodatAsDataFrame(filename=filename)
+        return self.geoDF[field].item()
 
     def _writeImageData(self, fileName, x, dataType, noData=-2.e9):
         '''
