@@ -8,7 +8,7 @@ Created on Thu Feb  1 15:21:35 2024
 
 from nisarhdf import nisarBaseHDF
 import numpy as np
-
+from nisarhdf import writeMultiBandVrt
 
 class nisarGUNWHDF(nisarBaseHDF):
     '''
@@ -102,6 +102,6 @@ class nisarGUNWHDF(nisarBaseHDF):
                 byteOrder = 'LSB'
             geoTransform = [self.x0, np.abs(self.dx), 0,
                             self.y0, 0, np.abs(self.dy)]
-            self._writeVrt(f'{filename}.vrt', [filename], [productField],
-                           metaData=metaData, byteOrder=byteOrder,
-                           setSRS=True, geoTransform=geoTransform)
+            writeMultiBandVrt(f'{filename}.vrt', [filename], [productField],
+                              metaData=metaData, byteOrder=byteOrder,
+                              epsg=self.epsg, geoTransform=geoTransform)

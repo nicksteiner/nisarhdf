@@ -17,6 +17,8 @@ from scipy import optimize
 import os
 from nisarhdf.nisarOrbit import nisarOrbit
 import geopandas as gpd
+from nisarhdf import formatGeojson
+import sys
 
 gdal.UseExceptions()
 
@@ -51,7 +53,7 @@ class nisarBaseHDF():
         None.
 
         '''
-        print(keywords)
+        #print(keywords)
         self.initTags(**keywords)
         # Constants WGS84
         self.EarthRadiusMajor = 6378137.0
@@ -223,6 +225,7 @@ class nisarBaseHDF():
         # Set image name
         self.ImageName = os.path.basename(hdfFile)
         # Parse primary parameters.
+        #print(referenceOrbit, secondaryOrbit, type(referenceOrbit))
         self.parseParams(referenceOrbit=referenceOrbit,
                          secondaryOrbit=secondaryOrbit,
                          **keywords)
@@ -255,7 +258,7 @@ class nisarBaseHDF():
             self.h5['identification']['lookDirection']).item().decode().lower()
         self.lookSign = {'right': 1.0, 'left': -1.0}[self.LookDirection]
 
-    def getSlantRange(self):
+    def getSlantRange(self, offsets=False):
         '''
         Input H5 and return a dicitionary with slant range spacing and
         near, middle, and far range.
@@ -275,30 +278,55 @@ class nisarBaseHDF():
             imageParams = parameters['secondary']['frequencyA']
         #
         # Get near range and SLC spacing
-        SLCNearRange = np.array(imageParams['slantRangeStart']).item()
+        self.SLCNearRange = np.array(imageParams['slantRangeStart']).item()
+        if offsets:
+            return
         SLCSpacing = np.array(imageParams['slantRangeSpacing']).item()
         #
         # Compute near, middle, and far range for ML coordinates
         self.MLNearRange = \
-            SLCNearRange + SLCSpacing * (self.NumberRangeLooks - 1) * 0.5
+            self.SLCNearRange + SLCSpacing * (self.NumberRangeLooks - 1) * 0.5
         self.MLFarRange = self.MLNearRange + (self.MLRangeSize - 1) * \
             SLCSpacing * self.NumberRangeLooks
         self.MLCenterRange = (self.MLNearRange + self.MLFarRange) * 0.5
         # Compute ML pixel size
         self.MLRangePixelSize = SLCSpacing * self.NumberRangeLooks
-        print(self.MLNearRange)
+        # print(self.MLNearRange)  
 
-    def getZeroDopplerTimeSecondary(self):
+    def getFirstSLCZeroDopplerFromMeta(self, isSecondary=False):
         '''
-        Get zero doppler time for the secondary image
+        Get Zero doppler start time from the SLC information in the metdaa
+
+        Parameters
+        ----------
+        isSecondary : booulan, optional
+            indicates Secondary. The default is False.
+
+        Returns
+        -------
+        None.
+
         '''
+        metaData = self.h5[self.product]['metadata']
+        parameters = metaData['processingInformation']['parameters']
+        SLC = 'reference'
+        if isSecondary:
+            SLC = 'secondary'
         earlyTime, _ = self.parseDateStr(self.parseString(
-            self.h5['identification']['secondaryZeroDopplerStartTime']))
+            parameters[SLC][self.frequency]['zeroDopplerStartTime']))
         #
         # SLC first time
         zeroTime = {'hour': 0, 'minute': 0, 'second': 0, 'microsecond': 0}
         slcFirstZeroDopplerTime = (earlyTime - earlyTime.replace(**zeroTime)
                                    ).total_seconds()
+        return slcFirstZeroDopplerTime
+
+    def getZeroDopplerTimeSecondary(self):
+        '''
+        Get zero doppler time for the secondary image
+        '''
+        slcFirstZeroDopplerTime = self.getFirstSLCZeroDopplerFromMeta(
+            isSecondary=True)
         # convert to multi look time
         self.firstZeroDopplerTime = slcFirstZeroDopplerTime + \
             0.5 * (self.NumberAzimuthLooks - 1)/self.PRF
@@ -308,7 +336,8 @@ class nisarBaseHDF():
             self.h5['identification']['secondaryZeroDopplerEndTime']))
         #
         # Use first earlyTime date
-        slcLastZeroDopplerTime = (lastTime - earlyTime.replace(**zeroTime)
+        zeroTime = {'hour': 0, 'minute': 0, 'second': 0, 'microsecond': 0}
+        slcLastZeroDopplerTime = (lastTime - lastTime.replace(**zeroTime)
                                   ).total_seconds()
         #
         nSLCSamples = int((slcLastZeroDopplerTime -
@@ -325,9 +354,9 @@ class nisarBaseHDF():
         #
         # compute the nominal time
         self.NominalTime = str(timedelta(
-            seconds=np.around(self.firstZeroDopplerTime, decimals=5)))
+            seconds=np.around(self.firstZeroDopplerTime, decimals=6)))
 
-    def getZeroDopplerTime(self, secondary=False):
+    def getZeroDopplerTime(self, secondary=False, offsets=False):
         '''
         Input y5 and return dictionary with zero Doppler spacing and
         first, middle, and last zero Doppler.
@@ -342,16 +371,27 @@ class nisarBaseHDF():
         self.zeroDopplerTimeData = \
             bands[self.frequency][self.productType]['zeroDopplerTime']
         #
-        # get start, mid, and end times
-        self.firstZeroDopplerTime = self.zeroDopplerTimeData[0]
-        self.midZeroDopplerTime = (self.zeroDopplerTimeData[0] +
-                                   self.zeroDopplerTimeData[-1]) * 0.5
-        self.lastZeroDopplerTime = self.zeroDopplerTimeData[-1]
-        #
         # get the time interval per sample
         self.zeroDopplerTimeDelta = np.array(
             bands[self.frequency][self.productType]['zeroDopplerTimeSpacing']
             ).item()
+        #
+        # get start, mid, and end times
+        # Note computing from SLC since test products seem to have incorrect
+        # value
+        if not offsets:
+            self.firstZeroDopplerTime = self.getFirstSLCZeroDopplerFromMeta() + \
+                0.5 * (self.NumberAzimuthLooks - 1)/self.PRF
+        else:
+            
+            self.firstZeroDopplerTime = self.getFirstSLCZeroDopplerFromMeta() + \
+                (self.a0 - 1)/self.PRF
+
+        self.lastZeroDopplerTime = (self.firstZeroDopplerTime +
+                                    (self.MLAzimuthSize - 1) *
+                                    self.zeroDopplerTimeDelta)
+        self.midZeroDopplerTime = (self.firstZeroDopplerTime +
+                                   self.lastZeroDopplerTime) * 0.5
         # compute the nominal time
         self.NominalTime = str(timedelta(
             seconds=np.around(self.firstZeroDopplerTime, decimals=5)))
@@ -623,10 +663,13 @@ class nisarBaseHDF():
 
         # Compute corners
         i = 0
+        # ll, ul, lr, ur
         for r in [self.MLNearRange, self.MLFarRange]:
             for t in [self.firstZeroDopplerTime, self.lastZeroDopplerTime]:
+                #print(r, t, self.RTtoLatLon(r, t, 0))
                 x[i], y[i] = self.lltoxy(*self.RTtoLatLon(r, t, 0)[0:2])
                 i += 1
+        
         return x, y
 
     def _idCorners(self, x, y):
@@ -643,27 +686,17 @@ class nisarBaseHDF():
         None.
 
         '''
-        #
-        # Get two most extreme points in each diretion.
-        w = np.argsort(x)[0:2]
-        e = np.flip(np.argsort(x))[0:2]
-        s = np.argsort(y)[0:2]
-        n = np.flip(np.argsort(y))[0:2]
-        #
-        # Find the points coorner points as intersection of two extreme points.
-        ll = np.intersect1d(w, s)[0]
-        lr = np.intersect1d(e, s)[0]
-        ul = np.intersect1d(w, n)[0]
-        ur = np.intersect1d(e, n)[0]
-        #
-        # Convert back to lat lon
+        # order from looping on range then azimuth in _getRectangle
+        ll, ul, lr, ur = 0, 1, 2, 3
         self.xytoll = pyproj.Transformer.from_crs(f"EPSG:{self.epsg}",
                                                   "EPSG:4326").transform
         lat, lon = self.xytoll(x, y)
         # save in dict
         self.corners = {'ll': (lat[ll], lon[ll]), 'lr': (lat[lr], lon[lr]),
                         'ur': (lat[ur], lon[ur]), 'ul': (lat[ul], lon[ul])}
-
+        # print(self.corners)
+        # sys.exit('stop')
+        
     def getEPSG(self):
         '''
         Get epsg
@@ -762,7 +795,7 @@ class nisarBaseHDF():
         '''
         self.deltaT = 0.0
 
-    def parseStateVectors(self, XMLOrbit=None):
+    def parseStateVectors(self, XMLOrbit=None, SLC=False):
         '''
         Setup an nisarOrbit instance to contain the state vectors
 
@@ -776,7 +809,9 @@ class nisarBaseHDF():
         if XMLOrbit is None:
             if not self.isSecondary:
                 h5OrbitGroup = \
-                    self.h5[self.product]['metadata']['orbit']['reference']
+                    self.h5[self.product]['metadata']['orbit']
+                if not SLC:
+                    h5OrbitGroup = h5OrbitGroup['reference']
             else:
                 h5OrbitGroup = \
                     self.h5[self.product]['metadata']['orbit']['secondary']
@@ -1038,65 +1073,6 @@ class nisarBaseHDF():
                 svData = list(svData)
             self.geodatDict[sv] = svData
 
-    def formatGeojson(self, myString):
-        '''
-        Format a geojson string for readability.
-
-        Parameters
-        ----------
-        myString : str
-            GeoJson unformatted string
-
-        Returns
-        -------
-        formatted geoJson string
-
-        '''
-        # indent function
-        def myIndent(n, x, formattedString):
-            for space in [' '] * n * 2:
-                formattedString += space
-            return formattedString
-        #
-        # Start bracket counds at 0
-        braceCount, bracketCount = 0, 0
-        # Remote space
-        myString = myString.replace(' \"', '\"')
-        #
-        # Start with empty string
-        formattedString = ''
-        # And add characters back with additional formatting as neeed.
-        for x in myString:
-            # Add return and indent if not in list (leftBracket==0)
-            if x in ',' and bracketCount == 0:
-                formattedString += x
-                formattedString += '\n'
-                formattedString = myIndent(braceCount, x, formattedString)
-            # Update bracket count if left bracket
-            elif x == '[':
-                bracketCount += 1
-                formattedString += x
-            # decrement left bracket count
-            elif x == ']':
-                bracketCount -= 1
-                formattedString += x
-            # Update brace count if left brace and add return and indent
-            elif x == '{':
-                braceCount += 1
-                formattedString += x
-                formattedString += '\n'
-                formattedString = myIndent(braceCount, x, formattedString)
-            # Decrement braceCount and add new line and indent
-            elif x == '}':
-                formattedString += '\n'
-                braceCount -= 1
-                formattedString = myIndent(braceCount, x, formattedString)
-                formattedString += x
-            # Regulary character so append
-            else:
-                formattedString += x
-        return formattedString
-
     def writeGeodatGeojson(self, filename=None, path='.', secondary=False):
         '''
         Write a geodat geojson file
@@ -1119,8 +1095,10 @@ class nisarBaseHDF():
         if not hasattr(self, 'corners'):
             self.getCorners()
         #
+        # print(self.corners)
         geoJsonGeometry = geojson.Polygon(
-            [[self.corners[x] for x in ['ll', 'lr', 'ur', 'ul', 'll']]])
+            # [[self.corners[x] for x in ['ll', 'lr', 'ur', 'ul', 'll']]])
+            [[self.corners[x] for x in ['ll', 'ul', 'ur', 'lr', 'll']]])
         self.geodatGeojson = geojson.Feature(geometry=geoJsonGeometry,
                                              properties=self.geodatDict)
         #
@@ -1134,7 +1112,10 @@ class nisarBaseHDF():
                                               path=path)
         #
         # Write and format the string, then write to the file
-        geojsonString = self.formatGeojson(geojson.dumps(self.geodatGeojson))
+        geojsonString = formatGeojson(geojson.dumps(self.geodatGeojson))
+        # Remove existing file to avoid problems with links
+        if os.path.exists(os.path.join(path, filename)):
+            os.remove(os.path.join(path, filename))
         with open(os.path.join(path, filename), 'w') as fpGeojson:
             print(geojsonString, file=fpGeojson)
 
@@ -1163,61 +1144,61 @@ class nisarBaseHDF():
         # set data value
         setattr(self, productField, np.array(data[productField]))
 
-    def _writeVrt(self, newVRTFile, sourceFiles, descriptions,
-                  byteOrder=None, eType=gdal.GDT_Float32,
-                  geoTransform=[-0.5, 1., 0., -0.5, 0., 1.], metaData=None,
-                  setSRS=False, noDataValue=-2.0e9):
-        '''
-        Write a vrt for the file. Note sourcefiles and descriptions have
-        to be passed in.
-        '''
-        if type(sourceFiles) is not list:
-            sourceFiles = [sourceFiles]
-        if type(descriptions) is not list:
-            descriptions = [descriptions]
-        # get the meta data from the template
-        # Kill any old file
-        if os.path.exists(newVRTFile):
-            os.remove(newVRTFile)
-        # Create VRT
-        bands = len(sourceFiles)
-        drv = gdal.GetDriverByName("VRT")
-        vrt = drv.Create(newVRTFile, self.MLRangeSize, self.MLAzimuthSize,
-                         bands=0, eType=eType)
+    # def _writeVrt(self, newVRTFile, sourceFiles, descriptions,
+    #               byteOrder=None, eType=gdal.GDT_Float32,
+    #               geoTransform=[-0.5, 1., 0., -0.5, 0., 1.], metaData=None,
+    #               setSRS=False, noDataValue=-2.0e9):
+    #     '''
+    #     Write a vrt for the file. Note sourcefiles and descriptions have
+    #     to be passed in.
+    #     '''
+    #     if type(sourceFiles) is not list:
+    #         sourceFiles = [sourceFiles]
+    #     if type(descriptions) is not list:
+    #         descriptions = [descriptions]
+    #     # get the meta data from the template
+    #     # Kill any old file
+    #     if os.path.exists(newVRTFile):
+    #         os.remove(newVRTFile)
+    #     # Create VRT
+    #     bands = len(sourceFiles)
+    #     drv = gdal.GetDriverByName("VRT")
+    #     vrt = drv.Create(newVRTFile, self.MLRangeSize, self.MLAzimuthSize,
+    #                      bands=0, eType=eType)
 
-        vrt.SetGeoTransform(geoTransform)
-        #
-        if setSRS:
-            sr = osr.SpatialReference()
-            sr.ImportFromEPSG(self.epsg)
-            vrt.SetSpatialRef(sr)
+    #     vrt.SetGeoTransform(geoTransform)
+    #     #
+    #     if setSRS:
+    #         sr = osr.SpatialReference()
+    #         sr.ImportFromEPSG(self.epsg)
+    #         vrt.SetSpatialRef(sr)
 
-        if metaData is None:
-            metaData = {}
-        if byteOrder is None:
-            if "ByteOrder" in metaData:
-                byteOrder = metaData["ByteOrder"]
-            else:
-                byteOrder = "MSB"
-                metaData["ByteOrder"] = byteOrder
-        else:
-            metaData["ByteOrder"] = byteOrder
-        if metaData is not None:
-            vrt.SetMetadata(metaData)
-        # Look to add bands
-        for sourceFile, description, bandNumber in \
-                zip(sourceFiles, descriptions, range(1, bands + 1)):
-            options = [f"SourceFilename={os.path.basename(sourceFile)}",
-                       "relativeToVRT=1",
-                       "subclass=VRTRawRasterBand",
-                       f"BYTEORDER={byteOrder}",
-                       bytes(0)]
-            vrt.AddBand(eType, options=options)
-            band = vrt.GetRasterBand(bandNumber)
-            band.SetMetadataItem("Description", description)
-            band.SetNoDataValue(noDataValue)
-        # Close the vrt
-        vrt = None
+    #     if metaData is None:
+    #         metaData = {}
+    #     if byteOrder is None:
+    #         if "ByteOrder" in metaData:
+    #             byteOrder = metaData["ByteOrder"]
+    #         else:
+    #             byteOrder = "MSB"
+    #             metaData["ByteOrder"] = byteOrder
+    #     else:
+    #         metaData["ByteOrder"] = byteOrder
+    #     if metaData is not None:
+    #         vrt.SetMetadata(metaData)
+    #     # Look to add bands
+    #     for sourceFile, description, bandNumber in \
+    #             zip(sourceFiles, descriptions, range(1, bands + 1)):
+    #         options = [f"SourceFilename={os.path.basename(sourceFile)}",
+    #                    "relativeToVRT=1",
+    #                    "subclass=VRTRawRasterBand",
+    #                    f"BYTEORDER={byteOrder}",
+    #                    bytes(0)]
+    #         vrt.AddBand(eType, options=options)
+    #         band = vrt.GetRasterBand(bandNumber)
+    #         band.SetMetadataItem("Description", description)
+    #         band.SetNoDataValue(noDataValue)
+    #     # Close the vrt
+    #     vrt = None
 
     def readGeodatAsDataFrame(self, filename=None):
         '''
@@ -1256,13 +1237,14 @@ class nisarBaseHDF():
         #
         # binary types
         types = ['f4', '>f4', 'f8', '>f8', '>u2', 'u2', '>i2', 'i2', '>u4',
-                 'u4', '>i4', 'i4', 'u1']
+                 'u4', '>i4', 'i4', 'u1', 'c8', '>c8']
         if dataType not in types:
             self.printError(f'writeImage: invalid data type - {dataType}')
         #
         # Type translation
         types = {'f4': 'float32', 'f8': 'float64', 'i2': 'int16',
-                 'i4': 'int32', 'u1': 'uint8', 'u2': 'uint16', 'u4': 'uint32'}
+                 'i4': 'int32', 'u1': 'uint8', 'u2': 'uint16', 'u4': 'uint32',
+                 'c8': 'complex64'}
         x1 = x.astype(types[dataType.replace('>', '')])
         x1[np.isnan(x1)] = noData
         if '>' in dataType:
@@ -1299,9 +1281,9 @@ class nisarBaseHDF():
         self.geodat = [[self.nx, self.ny],
                        [np.abs(self.dx), np.abs(self.dy)],
                        [self.x0/1000, self.y0/1000.]]
-        print(self.geodat)
-        print(self.epsg)
-        print(self.x0, self.y0, self.nx, self.ny, self.dx, self.dy)
+        #print(self.geodat)
+        #print(self.epsg)
+        #print(self.x0, self.y0, self.nx, self.ny, self.dx, self.dy)
 
     def writeGeodat(self, filename):
         '''

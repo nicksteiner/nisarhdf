@@ -10,6 +10,7 @@ from osgeo import gdal
 import os
 import numpy as np
 import rioxarray
+from nisarhdf import writeMultiBandVrt
 
 
 class nisarROFFHDF(nisarBaseHDF):
@@ -48,6 +49,22 @@ class nisarROFFHDF(nisarBaseHDF):
                               productData='alongTrackOffset',
                               bands='swaths',
                               bytOrder=byteOrder)
+        
+    def rangeDopplerGeoTransform(self):
+        '''
+        Compute the geotranform for R/D coordinates
+
+        Returns
+        -------
+        geotranform : list
+            A geotransform with slant range and zero Doppler times
+
+        '''
+        dR = self.SLCRangePixelSize * self.deltaR
+        r0 = self.SLCNearRange + self.SLCRangePixelSize * self.r0 - dR / 2
+        dA = 1. / self.PRF * self.deltaA
+        a0 = self.firstZeroDopplerTime + self.a0 / self.PRF - dA / 2
+        return [r0, dR, 0., a0, 0., dA]
 
     def parseParams(self, secondGeodat=None, **kwds):
         '''
@@ -59,15 +76,22 @@ class nisarROFFHDF(nisarBaseHDF):
 
         '''
         self.isSecondary = False
+        self.effectivePRF()
+       
         self.getOffsetParams()
         # self.getNumberOfLooks()
+        self.getSlantRange(offsets=True)
         self.getSize(offsets=True)
+        self.getZeroDopplerTime(offsets=True)
+
         self.getSingleLookPixelSizeOffsets()
         self.getEPSG()
+        
 
     def writeOffsetsVrt(self, vrtFile, sourceFiles, geodat1, geodat2, mask,
                         Image1=None, Image2=None, scaleFactor=1,
-                        descriptions=None, byteOrder='LSB'):
+                        descriptions=None, byteOrder='LSB',
+                        radarCoordinates=False):
         metaData = {}
         #
         if descriptions is None:
@@ -81,18 +105,21 @@ class nisarROFFHDF(nisarBaseHDF):
             if var is not None:
                 metaData[key] = var
         #
-        self._writeVrt(vrtFile,
-                       sourceFiles,
-                       descriptions,
-                       byteOrder=byteOrder,
-                       eType=gdal.GDT_Float32,
-                       geoTransform=[-0.5, 1., 0., -0.5, 0., 1.],
-                       metaData=metaData,
-                       setSRS=False,
-                       noDataValue=-2.e9
-
-
-                       )
+        if radarCoordinates:
+            geoTransform = self.rangeDopplerGeoTransform()
+        else:
+            geoTransform = [-0.5, 1., 0., -0.5, 0., 1.]
+        #
+        writeMultiBandVrt(vrtFile,
+                          self.MLRangeSize,
+                          self.MLAzimuthSize,
+                          sourceFiles,
+                          descriptions,
+                          byteOrder=byteOrder,
+                          eType=gdal.GDT_Float32,
+                          geoTransform=geoTransform,
+                          metaData=metaData,
+                          noDataValue=-2.e9)
 
     def writeOffsetsDatFile(self, datFile, geodat1=None, geodat2=None):
         '''
@@ -319,13 +346,13 @@ class nisarROFFHDF(nisarBaseHDF):
             descriptions = [f'matchType {layer}']
             #
             if mt is not None:
-                self._writeVrt(f'{filenameRoot}.layer{layer}.mt.vrt',
-                               [f'{filenameRoot}.layer{layer}.mt'],
-                               descriptions,
-                               eType=gdal.GDT_Byte,
-                               geoTransform=[-0.5, 1., 0., -0.5, 0., 1.],
-                               setSRS=False,
-                               noDataValue=0)
+                writeMultiBandVrt(f'{filenameRoot}.layer{layer}.mt.vrt',
+                                  self.MLRangeSize, self.MLAzimuthSize,
+                                  [f'{filenameRoot}.layer{layer}.mt'],
+                                  descriptions,
+                                  eType=gdal.GDT_Byte,
+                                  geoTransform=[-0.5, 1., 0., -0.5, 0., 1.],
+                                  noDataValue=0)
 
     def writeData(self, filenameRoot, productField,  layers=[1, 2, 3],
                   geojsonName=None, geojsonNameSecondary=None,

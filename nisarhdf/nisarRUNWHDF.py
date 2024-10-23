@@ -9,7 +9,7 @@ from nisarhdf import nisarBaseHDF
 import os
 import numpy as np
 import rasterio
-
+from nisarhdf import writeMultiBandVrt, formatGeojson
 
 class nisarRUNWHDF(nisarBaseHDF):
     '''
@@ -82,6 +82,7 @@ class nisarRUNWHDF(nisarBaseHDF):
         # Note if secondary, it will have been passed the reference (see below)
         self.orbit = self.parseStateVectors(XMLOrbit=self.referenceOrbitXML)
         #
+        self.getOrbitPassDirection()
         self.getCorners()
         self.getRangeErrorCorrection()
         self.getTimeToFirstSample()
@@ -91,7 +92,7 @@ class nisarRUNWHDF(nisarBaseHDF):
         self.getDeltaT()
         self.getCenterLatLon()
         self.getSatelliteHeight()
-        self.getOrbitPassDirection()
+        #self.getOrbitPassDirection()
         self.getWavelength()
         self.getSingleLookPixelSize()
         #
@@ -108,6 +109,8 @@ class nisarRUNWHDF(nisarBaseHDF):
             self.dT = np.round((self.secondaryDatetime -
                                self.datetime).total_seconds()/86400.,
                                decimals=3)
+            self.secondary.referenceOrbit = self.secondaryOrbit
+            self.secondary.frame = self.frame
 
     def applyMask(self, maskFile):
         '''
@@ -221,10 +224,10 @@ class nisarRUNWHDF(nisarBaseHDF):
                 byteOrder = 'LSB'
             # pixel centered, lower left corner, pixel units
             geoTransform = [-0.5, 1., 0., -0.5, 0., 1.]
-            self._writeVrt(f'{filename}.vrt',
-                           [os.path.basename(filename)],
-                           [productField],
-                           metaData=metaData,
-                           byteOrder=byteOrder,
-                           setSRS=False,
-                           geoTransform=geoTransform)
+            writeMultiBandVrt(f'{filename}.vrt',
+                              self.MLRangeSize, self.MLAzimuthSize,
+                              [os.path.basename(filename)],
+                              [productField],
+                              metaData=metaData,
+                              byteOrder=byteOrder,
+                              geoTransform=geoTransform)
