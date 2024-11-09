@@ -5,7 +5,7 @@ Created on Mon Feb  5 08:36:38 2024
 
 @author: ian
 """
-from nisarhdf import nisarBaseHDF
+from nisarhdf.nisarBaseRangeDopplerHDF import nisarBaseRangeDopplerHDF
 from osgeo import gdal
 import os
 import numpy as np
@@ -13,7 +13,7 @@ import rioxarray
 from nisarhdf import writeMultiBandVrt
 
 
-class nisarROFFHDF(nisarBaseHDF):
+class nisarROFFHDF(nisarBaseRangeDopplerHDF):
     '''
     This class creates objects to work with nisar RUNWHDF images.
     '''
@@ -39,34 +39,23 @@ class nisarROFFHDF(nisarBaseHDF):
         None.
 
         '''
-        nisarBaseHDF.__init__(self,
-                              sar=sar,
-                              product='ROFF',
-                              frequency=frequency,
-                              productType='pixelOffsets',
-                              polarization=polarization,
-                              layer=layer,
-                              productData='alongTrackOffset',
-                              bands='swaths',
-                              bytOrder=byteOrder)
-        
-    def rangeDopplerGeoTransform(self):
-        '''
-        Compute the geotranform for R/D coordinates
+        nisarBaseRangeDopplerHDF.__init__(self,
+                                          sar=sar,
+                                          product='ROFF',
+                                          frequency=frequency,
+                                          productType='pixelOffsets',
+                                          polarization=polarization,
+                                          layer=layer,
+                                          productData='alongTrackOffset',
+                                          bands='swaths',
+                                          bytOrder=byteOrder)
+        self.lookType = 'Offset'
+        self.productParams = ['r0', 'a0', 'deltaR', 'deltaA']
+        for param in self.RDParams:
+            self.productParams.append(f'{self.lookType}{param}')
+            
 
-        Returns
-        -------
-        geotranform : list
-            A geotransform with slant range and zero Doppler times
-
-        '''
-        dR = self.SLCRangePixelSize * self.deltaR
-        r0 = self.SLCNearRange + self.SLCRangePixelSize * self.r0 - dR / 2
-        dA = 1. / self.PRF * self.deltaA
-        a0 = self.firstZeroDopplerTime + self.a0 / self.PRF - dA / 2
-        return [r0, dR, 0., a0, 0., dA]
-
-    def parseParams(self, secondGeodat=None, **kwds):
+    def parseParams(self, secondGeodat=None, **keywords):
         '''
         Parse all the params needed for offsets
 
@@ -76,22 +65,175 @@ class nisarROFFHDF(nisarBaseHDF):
 
         '''
         self.isSecondary = False
+        self.getOrbitAndFrame(**keywords)
+        self.getLookDirection()
+        self.getOrbitPassDirection()
+        self.parseRefDate()
+        self.getOffsetSize()
         self.effectivePRF()
-       
+        self.getOffsetWindowParams()
         self.getOffsetParams()
-        # self.getNumberOfLooks()
-        self.getSlantRange(offsets=True)
-        self.getSize(offsets=True)
-        self.getZeroDopplerTime(offsets=True)
-
-        self.getSingleLookPixelSizeOffsets()
+        self.getSLCSlantRange()
+        self.getSLCZeroDopplerTime()
+        self.getOffsetSlantRange()
+        self.getOffsetZeroDopplerTime()
+        self.getCenterIncidenceAngle()
         self.getEPSG()
-        
+        self.getWavelength()
+        self.getGranuleNames()
+        self.getExtent()
+        self.SLCSceneCenterAlongTrackSpacing()
+        self.fieldDict = {'pixelOffsets': ['slantRangeOffset', 
+                                           'slantRangeOffsetVariance',
+                                           'alongTrackOffset',
+                                           'alongTrackOffsetVariance',
+                                           'crossOffsetVariance',
+                                           'correlationSurfacePeak',
+                                           'snr']}
+        self.getLayers(self.fieldDict['pixelOffsets'])
+        self.scaleFactors = {'slantRangeOffset': 1./self.SLCRangePixelSize,
+                             'alongTrackOffset': 1./self.SLCAzimuthPixelSize,
+                             'slantRangeOffsetVariance':
+                                 (1./self.SLCRangePixelSize)**2,
+                             'alongTrackOffsetVariance':
+                                 (1./self.SLCAzimuthPixelSize)**2}
+        self.suffixes = {'slantRangeOffset': '.dr',
+                         'slantRangeOffsetVariance': '.vr',
+                         'alongTrackOffset': '.da',
+                         'alongTrackOffsetVariance': '.va',
+                         'crossOffsetVariance': '.vc',
+                         'correlationSurfacePeak': '.cc',
+                         'snr': '.snr'}
+
+    # def SCLSceneCenterAlongTrackSpacing(self):
+    #     '''
+    #     Get SLC Scene Center Spacing
+
+    #     Returns
+    #     -------
+    #     None.
+
+    #     '''
+    #     productType = \
+    #         self.h5[self.product][self.bands][self.frequency][self.productType]
+    #     self.SLCAzimuthPixelSize = np.array(
+    #         productType['sceneCenterAlongTrackSpacing']).item() / self.deltaA
+
+    def getOffsetZeroDopplerTime(self, secondary=False):
+        '''
+        Input y5 and return dictionary with zero Doppler spacing and
+        first, middle, and last zero Doppler.
+
+        Returns
+        -------
+        None.
+
+        '''
+        self.OffsetZeroDopplerTimeSpacing = \
+            self.SLCZeroDopplerTimeSpacing * self.deltaA
+        self.getSLCZeroDopplerTime(secondary=secondary)
+        # Compute first, middle and last Doppler times
+        self.OffsetFirstZeroDopplerTime = self.SLCFirstZeroDopplerTime + \
+            self.a0 * self.SLCZeroDopplerTimeSpacing
+        # last
+        self.OffsetLastZeroDopplerTime = self.OffsetFirstZeroDopplerTime + \
+            self.OffsetZeroDopplerTimeSpacing * (self.OffsetAzimuthSize-1)
+        # Middle
+        self.OffsetMidZeroDopplerTime = 0.5 * \
+            (self.OffsetFirstZeroDopplerTime + self.OffsetLastZeroDopplerTime)
+        bands = self.h5[self.product][self.bands]
+        self.zeroDopplerTimeData = np.array(
+                 bands[self.frequency][self.productType]['zeroDopplerTime'])
+
+    def getOffsetSlantRange(self):
+        '''
+        Get slant ranges for offsets
+
+        Returns
+        -------
+        None.
+
+        '''
+        self.OffsetRangePixelSize = self.SLCRangePixelSize * self.deltaR
+        self.OffsetNearRange = self.SLCNearRange + \
+            self.SLCRangePixelSize * self.r0
+        self.OffsetFarRange = self.OffsetNearRange + \
+            self.OffsetRangePixelSize * (self.OffsetRangeSize - 1)
+        self.OffsetCenterRange = 0.5 * \
+            (self.OffsetNearRange + self.OffsetFarRange)
+        #
+        bands = self.h5[self.product][self.bands] 
+        self.slantRangeData = np.array(
+                 bands[self.frequency][self.productType]['slantRange'])
+
+    def getOffsetSize(self):
+        '''
+        Get size of offset products
+        '''
+        frequency = self.h5[self.product][self.bands][self.frequency]
+        polarization = frequency[self.productType][self.polarization]
+        self.OffsetAzimuthSize, self.OffsetRangeSize = \
+            polarization['layer1']['alongTrackOffset'].shape
+
+    def getOffsetParams(self):
+        '''
+        Get offset params, a0, r0, deltaA, deltaR
+
+        Returns
+        -------
+        None.
+
+        '''
+        procInfo = self.h5[self.product]['metadata']['processingInformation']
+        frequency = procInfo['parameters'][self.productType][self.frequency]
+        #
+        setattr(self, 'deltaA',
+                np.array(frequency['alongTrackSkipWindowSize']).item())
+        setattr(self, 'deltaR',
+                np.array(frequency['slantRangeSkipWindowSize']).item())
+        setattr(self, 'a0',
+                np.array(frequency['alongTrackStartPixel']).item())
+        setattr(self, 'r0',
+                np.array(frequency['slantRangeStartPixel']).item())
 
     def writeOffsetsVrt(self, vrtFile, sourceFiles, geodat1, geodat2, mask,
                         Image1=None, Image2=None, scaleFactor=1,
                         descriptions=None, byteOrder='LSB',
                         radarCoordinates=False):
+        '''
+        Write a VRT file to accompany offset products
+
+        Parameters
+        ----------
+        vrtFile : str
+            Name of vrt file.
+        sourceFiles : list of str
+            List of filenames.
+        geodat1 : str
+            Name of first geodat to include in meta data.
+        geodat2 : str
+            Name of second geodat to include in meta data.
+        mask : str
+            Name of mask.
+        Image1 : str, optional
+            File name for first image in pair. The default is None.
+        Image2 : TYPE, optional
+            File name for second image in pair. The default is None.
+        scaleFactor : float, optional
+            Scale factor to apply to image. The default is 1.
+        descriptions : list of str, optional
+            Descriptiosn for each band. The default is None.
+        byteOrder : str, optional
+            Byte order. The default is 'LSB'.
+        radarCoordinates : bool, optional
+            Set True to use radar coordinates for the geo transform. The
+            default is False.
+
+        Returns
+        -------
+        None.
+
+        '''
         metaData = {}
         #
         if descriptions is None:
@@ -111,8 +253,8 @@ class nisarROFFHDF(nisarBaseHDF):
             geoTransform = [-0.5, 1., 0., -0.5, 0., 1.]
         #
         writeMultiBandVrt(vrtFile,
-                          self.MLRangeSize,
-                          self.MLAzimuthSize,
+                          self.OffsetRangeSize,
+                          self.OffsetAzimuthSize,
                           sourceFiles,
                           descriptions,
                           byteOrder=byteOrder,
@@ -123,16 +265,16 @@ class nisarROFFHDF(nisarBaseHDF):
 
     def writeOffsetsDatFile(self, datFile, geodat1=None, geodat2=None):
         '''
-        Write an offsets data file
+        Write an offsets dat file (for GrIMP processing only)
 
         Parameters
         ----------
-        datFile : TYPE
-            DESCRIPTION.
-        geodat1 : TYPE
-            DESCRIPTION.
-        geodat2 : TYPE
-            DESCRIPTION.
+        datFile : str
+            File name for data file.
+        geodat1 : str
+            Name of first geodat to include in meta data.
+        geodat2 : str
+            Name of second geodat to include in meta data.
 
         Returns
         -------
@@ -141,7 +283,7 @@ class nisarROFFHDF(nisarBaseHDF):
         '''
         with open(datFile, 'w') as fp:
             print(self.a0, self.r0,
-                  self.MLRangeSize, self.MLAzimuthSize,
+                  self.OffsetRangeSize, self.OffsetAzimuthSize,
                   self.deltaR, self.deltaA,
                   file=fp)
             if geodat1 is None:
@@ -150,65 +292,6 @@ class nisarROFFHDF(nisarBaseHDF):
                 geodat2 = geodat1.replace('.in', '.secondary'
                                           ).replace('.geojson', '.secondary')
             print(geodat1, geodat2, file=fp)
-
-    def getLayers(self, layerTypes, layers=['layer1', 'layer2', 'layer3']):
-        '''
-        Get Layers for a given layerNames
-
-        Parameters
-        ----------
-        layerName : TYPE
-            DESCRIPTION.
-        layers : TYPE, optional
-            DESCRIPTION. The default is ['layer1', 'layer2', 'layer3'].
-
-        Returns
-        -------
-        None.
-
-        '''
-        h5Data = \
-            self.h5[self.product]['swaths'][self.frequency][self.productType]
-        for layerType in layerTypes:
-            layerData = []
-            for layer in layers:
-                layerData.append(h5Data[self.polarization][layer][layerType])
-            setattr(self, layerType, np.stack(layerData))
-
-    def removeOutlierOffsets(self, filterField,
-                             thresholds=[0.07, 0.05, 0.025],
-                             layers=[1, 2, 3]):
-        '''
-        Remove outliners based on correlation or snr threshold
-
-        Parameters
-        ----------
-        filterField : str
-            Field to use to discard outliners ('correlationSurfacePeak' or
-                                               'snr'.
-        thresholds : TYPE, optional
-            Thresholds use to discard outlier.
-            The default is [0.07, 0.05, 0.025],
-            which are defaults for correlation.
-        layers : list, optional
-            List of layers to process. The default is [1, 2, 3].
-
-        Returns
-        -------
-        None.
-
-        '''
-        # Load the product fields if not already done
-        self.getProducts([filterField, 'alongTrackOffset', 'slantRangeOffset'])
-        # Loop over layers
-        qaData = getattr(self, filterField)
-        azOffsets = getattr(self, 'alongTrackOffset')
-        rgOffsets = getattr(self, 'slantRangeOffset')
-        for layer in layers:
-            qaLayer = qaData[layer-1]
-            bad = qaLayer < thresholds[layer-1]
-            azOffsets[layer-1][bad] = np.nan
-            rgOffsets[layer-1][bad] = np.nan
 
     def applyMask(self, maskFile, layers=[3], maskValue=1):
         '''
@@ -237,205 +320,15 @@ class nisarROFFHDF(nisarBaseHDF):
             self.alongTrackOffset[layer-1][masked] = np.nan
             self.slantRangeOffset[layer-1][masked] = np.nan
 
-    def getProducts(self, productFields):
+    def rangeDopplerGrid(self):
         '''
-         Load the product specificed product fields if not already done.
-
-        Parameters
-        ----------
-        productFields : list of str
-            Product fields to load.
+        Compute range (m) zero doppler time (sec) coordinates for the offsets.
+        grid.
 
         Returns
         -------
         None.
 
         '''
-        for productField in productFields:
-            # Get layers if need
-            if not hasattr(self, productField):
-                print(f'getting layers for {productField}')
-                self.getLayers([productField])
+        pass
 
-    def writeOffsets(self, filenameRoot,
-                     geojsonName=None,
-                     geojsonNameSecondary=None,
-                     productFields=['slantRangeOffset',
-                                    'alongTrackOffset',
-                                    'correlationSurfacePeak'],
-                     suffixes=['.dr', '.da', '.cc'],
-                     dataTypes=['>f4', '>f4', '>f4'],
-                     layers=[1, 2, 3], matchTypes=[1, 2, 3]):
-        '''
-        Breakout offsets and write as layers.
-
-        Parameters
-        ----------
-        filenameRoot : str
-            Basename for offsets (e.g., offsets.dr, .da...).
-        geojsonName : str optional
-            geojson for redference image. The default is None.
-        geojsonNameSecondary : TYPE, optional
-            geojson for secondary. The default is None.
-        productFields : list of str, optional
-            Product Fields to save. The default is ['alongTrackOffset',
-                                                    'slantRangeOffset','snr'].
-        suffixes : list of str, optional
-            suffixes for output fields. Should correspond to product fields.
-            The default is ['.da', '.dr', '.snr'].
-        dataTypes : str, optional
-            Format for output. The default is byteswap ['>f4', '>f4', '>f4'].
-        layers : list of ints, optional
-            Layers to save. The default is [1, 2, 3].
-
-        Returns
-        -------
-        None.
-
-        '''
-        mt = None
-        # Make sure the data have been read
-        self.getProducts(productFields)
-        # Scale factors for conversion to pixels
-        scaleFactors = {'slantRangeOffset': 1./self.SLCRangePixelSize,
-                        'alongTrackOffset': 1./self.SLCAzimuthPixelSize}
-        #
-        # Look over layers
-        for layer, matchType in zip(layers, matchTypes):
-            sourceFiles = []
-            descriptions = []
-            for productField, suffix, dataType in \
-                    zip(productFields, suffixes, dataTypes):
-                data = getattr(self, productField)
-                sourceFile = f'{filenameRoot}.layer{layer}{suffix}'
-                sourceFiles.append(os.path.basename(sourceFile))
-                descriptions.append(f'{productField} {layer}')
-                if productField in scaleFactors:
-                    scaleFactor = scaleFactors[productField]
-                else:
-                    scaleFactor = 1.
-                self._writeImageData(sourceFile,
-                                     np.squeeze(data[layer-1, :, :]
-                                                ) * scaleFactor, dataType)
-                #
-                # If along track offsets save match type
-                if productField == 'alongTrackOffset':
-                    mt = np.zeros(np.squeeze(data[layer-1, :, :]).shape,
-                                  'byte')
-                    mt[np.squeeze(data[layer-1, :, :]) > -2.e8] = matchType
-                    self._writeImageData(f'{filenameRoot}.layer{layer}.mt',
-                                         mt, 'u1')
-
-            # Vrt file for the layer
-            vrtFile = f'{filenameRoot}.layer{layer}.vrt'
-            byteOrder = 'LSB'
-            if '>' in dataType:
-                byteOrder = 'MSB'
-            # Save the vrt
-            self.writeOffsetsVrt(vrtFile, sourceFiles, geojsonName,
-                                 geojsonNameSecondary, None,
-                                 Image1=None,
-                                 Image2=None,
-                                 scaleFactor=1,
-                                 descriptions=descriptions,
-                                 byteOrder=byteOrder)
-            #
-            self.writeOffsetsDatFile(f'{filenameRoot}.layer{layer}.dat',
-                                     geodat1=geojsonName,
-                                     geodat2=geojsonNameSecondary)
-            descriptions = [f'matchType {layer}']
-            #
-            if mt is not None:
-                writeMultiBandVrt(f'{filenameRoot}.layer{layer}.mt.vrt',
-                                  self.MLRangeSize, self.MLAzimuthSize,
-                                  [f'{filenameRoot}.layer{layer}.mt'],
-                                  descriptions,
-                                  eType=gdal.GDT_Byte,
-                                  geoTransform=[-0.5, 1., 0., -0.5, 0., 1.],
-                                  noDataValue=0)
-
-    def writeData(self, filenameRoot, productField,  layers=[1, 2, 3],
-                  geojsonName=None, geojsonNameSecondary=None,
-                  dataType='>f4', metaData=None, datFile=None,
-                  suffix=''):
-        '''
-       Write offset data
-       Parameters
-       ----------
-       filename : TYPE
-           DESCRIPTION.
-       productField : TYPE
-           DESCRIPTION.
-       layers : TYPE, optional
-           DESCRIPTION. The default is ['layer1', 'layer2', 'layer3'].
-       geojsonName : str, optional
-           DESCRIPTION. The default is None.
-       geojsonNameSecondary : TYPE, optional
-           DESCRIPTION. The default is None.
-       dataType : str, optional
-           DESCRIPTION. The default is '>f4'.
-       metaData : TYPE, optional
-           DESCRIPTION. The default is None.
-       suffix : str, optional
-           DESCRIPTION. The default is None.
-
-       Returns
-       -------
-       None.
-
-       '''
-        #
-        # Write the image data to a floating point file
-        if not hasattr(self, productField):
-            print(f'getting layers for {productField}')
-            self.getLayers([productField])
-
-        data = getattr(self, productField)
-        sourceFiles = []
-        descriptions = []
-        for layer in layers:
-            sourceFile = f'{filenameRoot}.layer{layer}{suffix}'
-            print(f'writing layer {sourceFile}')
-            print(np.min(data), np.max(data))
-            self._writeImageData(sourceFile,
-                                 np.squeeze(data[layer-1, :, :]), dataType)
-            sourceFiles.append(os.path.basename(sourceFile))
-            descriptions.append(f'{productField} {layer}')
-        vrtFile = f'{filenameRoot}{suffix}.vrt'
-        #
-        byteOrder = 'LSB'
-        if '>' in dataType:
-            byteOrder = 'MSB'
-        #
-        self.writeOffsetsVrt(vrtFile, sourceFiles,
-                             geojsonName, geojsonNameSecondary, None,
-                             Image1=None, Image2=None,
-                             scaleFactor=1, descriptions=descriptions,
-                             byteOrder=byteOrder)
-        #
-        if datFile is not None:
-            self.writeOffsetsDatFile(datFile,
-                                     geodat1=geojsonName,
-                                     geodat2=geojsonNameSecondary)
-        #
-        # write geodat in same dir as filename with geodatNRxNA unless other
-        # if includeGeojson:
-        #     self.writeGeodatGeojson(filename=geojsonName,
-        #                             path=os.path.dirname(filename),
-        #                             secondary=secondary)
-        # #
-        # # Write an accompanyting vrt file if requested filename.vrt
-        # if includeVRT:
-        #     if '>' in dataType:
-        #         byteOrder = 'MSB'
-        #     else:
-        #         byteOrder = 'LSB'
-        #     # pixel centered, lower left corner, pixel units
-        #     geoTransform = [-0.5, 1., 0., -0.5, 0., 1.]
-        #     self._writeVrt(f'{filename}.vrt',
-        #                    [os.path.basename(filename)],
-        #                    [productField],
-        #                    metaData=metaData,
-        #                    byteOrder=byteOrder,
-        #                    setSRS=False,
-        #                    geoTransform=geoTransform)

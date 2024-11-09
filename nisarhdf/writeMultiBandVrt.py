@@ -8,13 +8,20 @@ Created on Fri Oct  4 08:25:27 2024
 from osgeo import gdal, osr
 import os
 
+# gdalTypes = {'Float32': gdal.GDT_Float32,
+#              'Float64': gdal.GDT_Float64,
+#              'Complex64':  gdal.GDT_CFloat32,
+#              'UInt16': gdal.GDT_UInt16,
+#              'Int8': gdal.GDT_Byte,
+#              'UInt8': gdal.GDT_Byte}
+
 
 def writeMultiBandVrt(newVRTFile, xSize, ySize, sourceFiles, descriptions,
-                      byteOrder=None, eType=gdal.GDT_Float32,
-                      geoTransform=[-0.5, 1., 0., -0.5, 0., 1.], metaData=None,
-                      epsg=None, noDataValue=-2.0e9):
+                      byteOrder='MSB', eType=gdal.GDT_Float32,
+                      geoTransform=[-0.5, 1., 0., -0.5, 0., 1.], metaData={},
+                      epsg=None, noDataValue=-2.0e9, tiff=True):
     '''
-    Write a vrt for for several products as bands. 
+    Write a vrt for for several products as bands.
     Parameters
     ----------
     newVRTFile : str
@@ -27,7 +34,7 @@ def writeMultiBandVrt(newVRTFile, xSize, ySize, sourceFiles, descriptions,
         Byte order (MSB, LSB). If none, the default is use value from the
         metaData, if none there default to MSMB. The default is None.
     eType : GDT, optional
-        Gdal data type. The default is gdal.GDT_Float32.
+        Gdal data type or list of data types. The default is gdal.GDT_Float32.
     geoTransform : list, optional
         The geoTransform. The default is [-0.5, 1., 0., -0.5, 0., 1.] for
         array with no coordinates.
@@ -43,46 +50,145 @@ def writeMultiBandVrt(newVRTFile, xSize, ySize, sourceFiles, descriptions,
     None.
 
     '''
+    if not isinstance(eType, list):
+        eType = [eType] * len(sourceFiles)
+    if not isinstance(noDataValue, list):
+        noDataValue = [noDataValue] * len(sourceFiles)
     if type(sourceFiles) is not list:
         sourceFiles = [sourceFiles]
     if type(descriptions) is not list:
         descriptions = [descriptions]
-    if metaData is None:
-        metaData = {}
+    if byteOrder not in ['MSB', 'LSB']:
+        print(f"Invalid byte order {byteOrder}")
+        return
     # Kill any old file
     if os.path.exists(newVRTFile):
         os.remove(newVRTFile)
     # Create VRT
+    if tiff:
+        _createTiffVrt(newVRTFile, sourceFiles, descriptions, noDataValue,
+                       geoTransform=geoTransform,
+                       metaData=metaData,
+                       epsg=epsg)
+    else:
+        _createBinaryVrt(newVRTFile, xSize, ySize, sourceFiles, descriptions,
+                         eType, noDataValue,
+                         byteOrder=byteOrder,
+                         geoTransform=geoTransform,
+                         metaData=metaData,
+                         epsg=epsg)
+
+
+def _createTiffVrt(newVRTFile, sourceFiles, descriptions, noDataValues,
+                   geoTransform=[-0.5, 1., 0., -0.5, 0., 1.], metaData=None,
+                   epsg=None):
+    '''
+    Write a tiff vrt using gdal.BuildVRT
+
+    Parameters
+    ----------
+    newVRTFile : str
+        Vrt files.
+    sourceFiles : list of str
+        Source file names.
+    descriptions : list of str
+        Description for each band.
+    noDataValues :  list
+        No data values for each band.
+    geoTransform : list of floats, optional
+        Standard geotransform. The default is [-0.5, 1., 0., -0.5, 0., 1.].
+    metaData : dict, optional
+        Dict with meta data that applies to all bands. The default is None.
+    epsg : int, optional
+        EPSG Code. The default is None.
+
+    Returns
+    -------
+    None.
+
+    '''
+    # Build the vrt
+    options = gdal.BuildVRTOptions(options=["relativeToVRT=1"], separate=True)
+    ds = gdal.BuildVRT(newVRTFile, sourceFiles, options=options)
+
+    if metaData is not None:
+        ds.SetMetadata(metaData)
+    # This should be unnecesary since tiff should have info.
+    if epsg is not None:
+        sr = osr.SpatialReference()
+        sr.ImportFromEPSG(epsg)
+        ds.SetSpatialRef(sr)
+    #
+    nBands = len(sourceFiles)
+    # Update bands
+    for description, bandNumber, noDataValue in \
+            zip(descriptions, range(1, nBands + 1), noDataValues):
+        #
+        band = ds.GetRasterBand(bandNumber)
+        band.SetMetadataItem("Description", description)
+        band.SetNoDataValue(noDataValue)
+    ds.FlushCache()
+    ds = None
+
+
+def _createBinaryVrt(newVRTFile, xSize, ySize, sourceFiles, descriptions,
+                     eTypes, noDataValues,
+                     byteOrder='LSB',
+                     geoTransform=[-0.5, 1., 0., -0.5, 0., 1.],
+                     metaData=None,
+                     epsg=None):
+    '''
+    Write a tiff vrt using vrt driver directly since BuildVRT doesn't appear
+    to work with binary files.
+
+    Parameters
+    ----------
+    newVRTFile : str
+        Vrt files.
+    sourceFiles : list of str
+        Source file names.
+    descriptions : list of str
+        Description for each band.
+    eTypes : list
+        Data types in gdal codes
+    noDataValues :  list
+        No data values for each band.
+    byteOrder : str
+        Byte order. The default is 'LSB'
+    geoTransform : list of floats, optional
+        Standard geotransform. The default is [-0.5, 1., 0., -0.5, 0., 1.].
+    metaData : dict, optional
+        Dict with meta data that applies to all bands. The default is None.
+    epsg : int, optional
+        EPSG Code. The default is None.
+
+    Returns
+      -------
+      None.
+    '''
     bands = len(sourceFiles)
     drv = gdal.GetDriverByName("VRT")
-    vrt = drv.Create(newVRTFile, xSize, ySize, bands=0, eType=eType)
+    vrt = drv.Create(newVRTFile, xSize, ySize, bands=0)
     vrt.SetGeoTransform(geoTransform)
     #
     if epsg is not None:
         sr = osr.SpatialReference()
         sr.ImportFromEPSG(epsg)
         vrt.SetSpatialRef(sr)
-    # Set byte order, note defaults to MSB for GrIMP
-    if byteOrder is None:
-        if "ByteOrder" in metaData:
-            byteOrder = metaData["ByteOrder"]
-        else:
-            byteOrder = "MSB"
-            metaData["ByteOrder"] = byteOrder
-    else:
-        metaData["ByteOrder"] = byteOrder
-    # Set met data
     if metaData is not None:
         vrt.SetMetadata(metaData)
     # Loop to add bands
-    for sourceFile, description, bandNumber in \
-            zip(sourceFiles, descriptions, range(1, bands + 1)):
+    for sourceFile, description, bandNumber, dataType, noDataValue in \
+            zip(sourceFiles, descriptions, range(1, bands + 1), eTypes,
+                noDataValues):
+        # setup options with filename
         options = [f"SourceFilename={os.path.basename(sourceFile)}",
                    "relativeToVRT=1",
                    "subclass=VRTRawRasterBand",
                    f"BYTEORDER={byteOrder}",
                    bytes(0)]
-        vrt.AddBand(eType, options=options)
+        #
+        vrt.AddBand(dataType, options=options)
         band = vrt.GetRasterBand(bandNumber)
         band.SetMetadataItem("Description", description)
         band.SetNoDataValue(noDataValue)

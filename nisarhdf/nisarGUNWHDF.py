@@ -6,18 +6,20 @@ Created on Thu Feb  1 15:21:35 2024
 @author: ian
 """
 
-from nisarhdf import nisarBaseHDF
+from nisarhdf import nisarBaseGeocodedHDF
 import numpy as np
 from nisarhdf import writeMultiBandVrt
 
-class nisarGUNWHDF(nisarBaseHDF):
+class nisarGUNWHDF(nisarBaseGeocodedHDF):
     '''
     This class creates objects to work with nisar RUNWHDF images.
     '''
 
     def __init__(self,  sar='LSAR', product='GUNW', frequency='frequencyA',
                  productType='unwrappedInterferogram', polarization='HH',
-                 layer=None, productData='unwrappedPhase', bands='grids'):
+                 layer=None, productData='unwrappedPhase', bands='grids',
+                 referenceOrbitXML=None, secondaryOrbitXML=None,
+                 isSecondary=False):
         '''
         Instantiate nisarVel object. Possible bands are 'image', 'sigma0',
         'gamma0', or user defined.
@@ -34,17 +36,21 @@ class nisarGUNWHDF(nisarBaseHDF):
         -------
         None.
         '''
-        nisarBaseHDF.__init__(self,
-                              sar=sar,
-                              product=product,
-                              frequency=frequency,
-                              productType=productType,
-                              polarization=polarization,
-                              layer=layer,
-                              productData=productData,
-                              bands=bands)
+        nisarBaseGeocodedHDF.__init__(self,
+                                      sar=sar,
+                                      product=product,
+                                      frequency=frequency,
+                                      productType=productType,
+                                      polarization=polarization,
+                                      layer=layer,
+                                      productData=productData,
+                                      bands=bands,
+                                      isSecondary=isSecondary,
+                                      referenceOrbitXML=referenceOrbitXML,
+                                      secondaryOrbitXML=secondaryOrbitXML)
+        self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
 
-    def parseParams(self):
+    def parseParams(self, secondary=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -53,55 +59,29 @@ class nisarGUNWHDF(nisarBaseHDF):
         None.
 
         '''
-        self.getOrbitAndFrame()
+        print(self.layer)
+        self.getOrbitAndFrame(**keywords)
+        self.getNumberOfLooks()
         self.getLookDirection()
+        self.getOrbitPassDirection()
         self.parseRefDate()
         self.getNumberOfLooks()
-        self.getSize()
-        self.getWavelength()
         self.getGeoCoordinates()
-
-    def writeData(self, filename, productField, includeVRT=True,
-                  includeGeodat=True, dataType='>f4', metaData=None):
-        '''
-
-        Parameters
-        ----------
-        filename : str
-            Name of file to write data to.
-        productField : str
-            Key for data (e.g., unwrapped phase)
-        includeVRT : Bool, optional
-            Include filename.vrt file. The default is True.
-        includeGeodat : TYPE, optional
-            Include GrIMP filename.geodat file. The default is True.
-        dataType : str, optional
-            Data type to save as. The default is '>f4'.
-
-        Returns
-        -------
-        None.
-
-        '''
-        if not hasattr(self, productField):
-            self.getImageData(productField)
+        self.getWavelength()
+        self.effectivePRF()
+        self.getGranuleNames()
+        self.getEPSG()
+        self.getSLCSlantRange()
+        self.getSLCZeroDopplerTime()
+        self.getExtent()
         #
-        if self.dy < 0:
-            data = np.flipud(getattr(self, productField))
-        else:
-            data = self.getattr(self, productField)
-        #
-        self._writeImageData(filename, data, dataType)
-        #
-        if includeGeodat:
-            self.writeGeodat(f'{filename}.geodat')
-        if includeVRT:
-            if '>' in dataType:
-                byteOrder = 'MSB'
-            else:
-                byteOrder = 'LSB'
-            geoTransform = [self.x0, np.abs(self.dx), 0,
-                            self.y0, 0, np.abs(self.dy)]
-            writeMultiBandVrt(f'{filename}.vrt', [filename], [productField],
-                              metaData=metaData, byteOrder=byteOrder,
-                              epsg=self.epsg, geoTransform=geoTransform)
+        fieldDict = {'unwrappedInterferogram':
+                     ['coherenceMagnitude',
+                      'connectedComponents',
+                      'ionospherePhaseScreen',
+                      'ionospherePhaseScreenUncertainty',
+                      'unwrappedPhase'],
+                     'wrappedInterferogram':
+                     ['coherenceMagnitude',
+                      'wrappedInterferogram']}
+        self.loadData(fieldDict[self.productType])

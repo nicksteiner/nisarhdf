@@ -66,7 +66,7 @@ class nisarRSLCHDF(nisarBaseHDF):
         self.getSLCSLantRangeAndZeroDoppler()
         self.orbit = self.parseStateVectors(XMLOrbit=self.referenceOrbitXML,
                                             SLC=True)
-        self.getSatelliteHeight()
+        self.getSceneCenterSatelliteHeight()
         self.getSLCSize(**kwds)
         # self.getZeroDopplerTime()
         # self.getSize(offsets=True)
@@ -116,6 +116,9 @@ class nisarRSLCHDF(nisarBaseHDF):
             for p, v in zip(self.orbit.position, self.orbit.velocity):
                 print(f'{p[0]:10e} {p[1]:10e} {p[2]:10e}', file=fp)
                 print(f'{v[0]:e} {v[1]:e} {v[2]:e}', file=fp)
+                
+                
+        
 
     def getSLCSize(self, frequency='frequencyA', **kwds):
         '''

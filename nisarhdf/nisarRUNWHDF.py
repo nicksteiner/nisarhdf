@@ -5,13 +5,13 @@ Created on Thu Feb  1 10:44:13 2024
 
 @author: ian
 """
-from nisarhdf import nisarBaseHDF
+from nisarhdf.nisarBaseRangeDopplerHDF import nisarBaseRangeDopplerHDF
 import os
 import numpy as np
-import rasterio
+
 from nisarhdf import writeMultiBandVrt, formatGeojson
 
-class nisarRUNWHDF(nisarBaseHDF):
+class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
     '''
     This class creates objects to work with nisar RUNWHDF images.
     '''
@@ -39,20 +39,38 @@ class nisarRUNWHDF(nisarBaseHDF):
 
         '''
         print('ref orbit', referenceOrbitXML)
-        nisarBaseHDF.__init__(self,
-                              sar=sar,
-                              product='RUNW',
-                              frequency=frequency,
-                              productType='interferogram',
-                              polarization=polarization,
-                              layer=None,
-                              productData='unwrappedPhase',
-                              bands='swaths',
-                              isSecondary=isSecondary,
-                              referenceOrbitXML=referenceOrbitXML,
-                              secondaryOrbitXML=secondaryOrbitXML,
-                              debug=debug)
+        nisarBaseRangeDopplerHDF.__init__(self,
+                                          sar=sar,
+                                          product='RUNW',
+                                          frequency=frequency,
+                                          productType='interferogram',
+                                          polarization=polarization,
+                                          layer=None,
+                                          productData='unwrappedPhase',
+                                          bands='swaths',
+                                          isSecondary=isSecondary,
+                                          referenceOrbitXML=referenceOrbitXML,
+                                          secondaryOrbitXML=secondaryOrbitXML,
+                                          debug=debug)
+        self.lookType = 'ML'
+        self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
+        for param in self.RDParams:
+            self.productParams.append(f'{self.lookType}{param}')
+            
 
+   
+    def getSlantRangeData(self):
+        ''' Get slant range data '''
+        bands = self.h5[self.product][self.bands]
+        self.slantRangeData = np.array(
+            bands[self.frequency][self.productType]['slantRange'])
+
+    def getZeroDopplerTimeData(self):
+        ''' Get zero Doppler time '''
+        bands = self.h5[self.product][self.bands]
+        self.zeroDopplerTimeData = np.array(
+            bands[self.frequency][self.productType]['zeroDopplerTime'])
+            
     def parseParams(self, secondary=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
@@ -67,16 +85,19 @@ class nisarRUNWHDF(nisarBaseHDF):
         self.getLookDirection()
         self.parseRefDate()
         self.getNumberOfLooks()
-        self.getSize()
-        self.getSlantRange()
-
+        self.getSLCSlantRange()
+        self.getSLCZeroDopplerTime()
+        
+        self.getMLSize()
+        self.getMLSlantRange()
+        
         self.effectivePRF()
         self.getRangeErrorCorrection()
         if not secondary:
-            self.getZeroDopplerTime()
+            self.getMLZeroDopplerTime()
         else:
             self.ImageName = 'secondary'
-            self.getZeroDopplerTimeSecondary()
+            self.getMLZeroDopplerTime(secondary=True)
             #
         self.getCorrectedTime()
         # Note if secondary, it will have been passed the reference (see below)
@@ -91,10 +112,11 @@ class nisarRUNWHDF(nisarBaseHDF):
         self.getSquint()
         self.getDeltaT()
         self.getCenterLatLon()
-        self.getSatelliteHeight()
+        self.getSceneCenterSatelliteHeight()
         #self.getOrbitPassDirection()
         self.getWavelength()
-        self.getSingleLookPixelSize()
+        #self.getSingleLookPixelSize()
+        self.getExtent()
         #
         # If not secondary, create the secondary and parse
         if not secondary:
@@ -104,130 +126,84 @@ class nisarRUNWHDF(nisarBaseHDF):
                              debug=self.debug)
             self.secondary.h5 = self.h5
             self.secondary.parseParams(secondary=True)
-            self.secondaryDatetime = self.secondary.datetime
-            self.secondaryDate = self.secondary.datetime
+            #self.secondaryDatetime = self.secondary.datetime
+            #self.secondaryDate = self.secondary.datetime
             self.dT = np.round((self.secondaryDatetime -
                                self.datetime).total_seconds()/86400.,
                                decimals=3)
             self.secondary.referenceOrbit = self.secondaryOrbit
             self.secondary.frame = self.frame
+        self.genGeodatProperties()
+        fields = ['coherenceMagnitude', 'connectedComponents',
+                  'ionospherePhaseScreen', 'ionospherePhaseScreenUncertainty',
+                  'unwrappedPhase']
+        self.loadData(fields)
 
-    def applyMask(self, maskFile):
-        '''
-        Apply an external mask (e.g., icemask) file
+    # def SCLSceneCenterAlongTrackSpacing(self):
+    #     '''
+    #     Get SLC Scene Center Spacing
 
-        Parameters
-        ----------
-        maskFile : str
-            Path to mask file.
+    #     Returns
+    #     -------
+    #     None.
 
-        Returns
-        -------
-        None.
+    #     '''
+    #     productType = \
+    #         self.h5[self.product][self.bands][self.frequency][self.productType]
+    #     MLAzimuthSize = np.array(
+    #         productType['sceneCenterAlongTrackSpacing']).item()
+    #     self.SLCAzimuthPixelSize = MLAzimuthSize / self.NumberRangeLooks
 
-        '''
-        if not os.path.exists(maskFile):
-            self.printError('applyMask: file ({maskFile} does not exist')
-            return
+    # def writeData(self, filename, productField, includeVRT=True,
+    #               secondary=True,
+    #               includeGeojson=True,
+    #               geojsonName=None, geojsonNameSecondary=None,
+    #               dataType='>f4',
+    #               metaData=None):
+    #     '''
 
-        if not hasattr(self, 'maskedUnwrappedPhase'):
-            self.maskedUnwrappedPhase = self.unwrappedPhase.copy()
-        #
-        mask = rasterio.open(maskFile).read()[0]
-        self.maskedUnwrappedPhase[mask < 1] = np.nan
+    #     Parameters
+    #     ----------
+    #     filename : str
+    #         Name of file to write data to.
+    #     productField : str
+    #         Key for data (e.g., unwrapped phase)
+    #     includeVRT : Bool, optional
+    #         Include filename.vrt file. The default is True.
+    #     includeGeodat : TYPE, optional
+    #         Include GrIMP filename.geodat file. The default is True.
+    #     dataType : str, optional
+    #         Data type to save as. The default is '>f4'.
 
-    def maskPhase(self, largest=True):
-        '''
-        Mask phase using connected components mask
-        largest : Bool
-            Retain only the largest connected component.
-        Returns
-        -------
-        None.
+    #     Returns
+    #     -------
+    #     None.
 
-        '''
-        #
-        # Ensure data have been extracted
-        if not hasattr(self, 'connectedComponents'):
-            self.getImageData('connectedComponents')
-        if not hasattr(self, 'unwrappedPhase'):
-            self.getImageData('unwrappedPhase')
-        #
-        #  Make a copy
-        if not hasattr(self, 'maskedUnwrappedPhase'):
-            self.maskedUnwrappedPhase = self.unwrappedPhase.copy()
-        # Eliminate phases with connected component values of 0
-        print(np.sum(self.connectedComponents < 1))
-        #
-        self.maskedUnwrappedPhase[self.connectedComponents < 1] = np.nan
-        #
-        # Retain only the larged connected compnent.
-        if largest:
-            # Get the nonzero compponent labels
-            labels = np.unique(self.connectedComponents)
-            labels = labels[labels > 0]
-            # Count for each label value
-            count = np.array([np.sum(self.connectedComponents == x)
-                              for x in labels])
-            # find the max
-            smallLabels = labels[count < np.max(count)]
-            print('smallLabels', smallLabels)
-            #
-            # null out all the smaller
-            for label in smallLabels:
-                self.maskedUnwrappedPhase[label ==
-                                          self.connectedComponents] = np.nan
-
-    def writeData(self, filename, productField, includeVRT=True,
-                  secondary=True,
-                  includeGeojson=True,
-                  geojsonName=None, geojsonNameSecondary=None,
-                  dataType='>f4',
-                  metaData=None):
-        '''
-
-        Parameters
-        ----------
-        filename : str
-            Name of file to write data to.
-        productField : str
-            Key for data (e.g., unwrapped phase)
-        includeVRT : Bool, optional
-            Include filename.vrt file. The default is True.
-        includeGeodat : TYPE, optional
-            Include GrIMP filename.geodat file. The default is True.
-        dataType : str, optional
-            Data type to save as. The default is '>f4'.
-
-        Returns
-        -------
-        None.
-
-        '''
-        if not hasattr(self, productField):
-            self.getImageData(productField)
-        #
-        # Write the image data to a floating point file
-        self._writeImageData(filename, getattr(self, productField), dataType)
-        #
-        # write geodat in same dir as filename with geodatNRxNA unless other
-        if includeGeojson:
-            self.writeGeodatGeojson(filename=geojsonName,
-                                    path=os.path.dirname(filename),
-                                    secondary=secondary)
-        #
-        # Write an accompanyting vrt file if requested filename.vrt
-        if includeVRT:
-            if '>' in dataType:
-                byteOrder = 'MSB'
-            else:
-                byteOrder = 'LSB'
-            # pixel centered, lower left corner, pixel units
-            geoTransform = [-0.5, 1., 0., -0.5, 0., 1.]
-            writeMultiBandVrt(f'{filename}.vrt',
-                              self.MLRangeSize, self.MLAzimuthSize,
-                              [os.path.basename(filename)],
-                              [productField],
-                              metaData=metaData,
-                              byteOrder=byteOrder,
-                              geoTransform=geoTransform)
+    #     '''
+    #     if not hasattr(self, productField):
+    #         self.getImageData(productField)
+    #     #
+    #     # Write the image data to a floating point file
+    #     self._writeImageData(filename, getattr(self, productField), dataType)
+    #     #
+    #     # write geodat in same dir as filename with geodatNRxNA unless other
+    #     if includeGeojson:
+    #         self.writeGeodatGeojson(filename=geojsonName,
+    #                                 path=os.path.dirname(filename),
+    #                                 secondary=secondary)
+    #     #
+    #     # Write an accompanyting vrt file if requested filename.vrt
+    #     if includeVRT:
+    #         if '>' in dataType:
+    #             byteOrder = 'MSB'
+    #         else:
+    #             byteOrder = 'LSB'
+    #         # pixel centered, lower left corner, pixel units
+    #         geoTransform = [-0.5, 1., 0., -0.5, 0., 1.]
+    #         writeMultiBandVrt(f'{filename}.vrt',
+    #                           self.MLRangeSize, self.MLAzimuthSize,
+    #                           [os.path.basename(filename)],
+    #                           [productField],
+    #                           metaData=metaData,
+    #                           byteOrder=byteOrder,
+    #                           geoTransform=geoTransform)
