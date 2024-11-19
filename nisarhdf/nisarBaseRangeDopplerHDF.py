@@ -45,7 +45,8 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         nisarBaseHDF.__init__(self, **keywords)
         self.levelParams = []
         self.RDParams = ['RangeSize', 'AzimuthSize',
-                         'RangePixelSize', 'ZeroDopplerTimeSpacing',
+                         'RangePixelSize', 'AzimuthPixelSize',
+                         'ZeroDopplerTimeSpacing',
                          'NearRange', 'FirstZeroDopplerTime',
                          'IncidenceCenter']
 
@@ -78,6 +79,19 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
                          self.slantRangeData[-1] + 0.5 * da,
                          self.zeroDopplerTimeData[0] + 0.5 * da,
                          self.zeroDopplerTimeData[-1] - 0.5 * da]
+        
+        
+    # def getSlantRangeData(self):
+    #     ''' Get slant range data '''
+    #     bands = self.h5[self.product][self.bands]
+    #     self.slantRangeData = np.array(
+    #         bands[self.frequency][self.productType]['slantRange'])
+
+    # def getZeroDopplerTimeData(self):
+    #     ''' Get zero Doppler time '''
+    #     bands = self.h5[self.product][self.bands]
+    #     self.zeroDopplerTimeData = np.array(
+    #         bands[self.frequency][self.productType]['zeroDopplerTime'])
 
     #
     # Parameters for multi-look products RUNW and RIFG.
@@ -116,7 +130,6 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         None.
 
         '''
-
         # Compute ML sizes
         self.MLRangeSize = int(
             np.floor(self.SLCRangeSize / self.NumberRangeLooks))
@@ -496,15 +509,17 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
             [[self.corners[x] for x in ['ll', 'ul', 'ur', 'lr', 'll']]])
         self.geodatGeojson = geojson.Feature(geometry=geoJsonGeometry,
                                              properties=self.geodatDict)
-        #
+        # If secondary, pass too secondary and return
+        if secondary and hasattr(self, 'secondary'):
+            if filename is None:
+                filename = f'geodat{self.NumberRangeLooks}x' \
+                    f'{self.NumberAzimuthLooks}.secondary.geojson'
+            self.secondary.writeGeodatGeojson(filename=filename, path=path)
+            return
+        # Not secondary so continue
         if filename is None:
             filename = f'geodat{self.NumberRangeLooks}x' \
                     f'{self.NumberAzimuthLooks}.geojson'
-        if secondary and hasattr(self, 'secondary'):
-            filenameSecondary = filename.replace('.geojson',
-                                                 '.secondary.geojson')
-            self.secondary.writeGeodatGeojson(filename=filenameSecondary,
-                                              path=path)
         #
         # Write and format the string, then write to the file
         geojsonString = formatGeojson(geojson.dumps(self.geodatGeojson))

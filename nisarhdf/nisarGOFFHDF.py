@@ -50,7 +50,7 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
                                       secondaryOrbitXML=secondaryOrbitXML)
         self.productParams = ['xSize', 'ySize', 'dx', 'dy']
 
-    def parseParams(self, secondary=False, **keywords):
+    def parseParams(self, secondary=False, noLoadData=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -65,12 +65,12 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
         self.parseRefDate()
         self.getGeoCoordinates()
         self.getWavelength()
-        self.effectivePRF()
         self.getOffsetWindowParams()
         self.getGranuleNames()
         self.getEPSG()
         self.getSLCSlantRange()
         self.getSLCZeroDopplerTime()
+        self.effectivePRF()
         self.getExtent()
         self.fieldDict = {'pixelOffsets': ['slantRangeOffset',
                                            'slantRangeOffsetVariance',
@@ -79,7 +79,9 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
                                            'crossOffsetVariance',
                                            'correlationSurfacePeak',
                                            'snr']}
-        self.getLayers(self.fieldDict['pixelOffsets'])
+        #
+        self.getLayers(self.fieldDict['pixelOffsets'], noLoadData=noLoadData)
+        #
         self.scaleFactors = {'slantRangeOffset': 1./self.SLCRangePixelSize,
                              'alongTrackOffset': 1./self.SLCAzimuthPixelSize,
                              'slantRangeOffsetVariance':

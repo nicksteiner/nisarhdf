@@ -53,9 +53,8 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
         self.productParams = ['r0', 'a0', 'deltaR', 'deltaA']
         for param in self.RDParams:
             self.productParams.append(f'{self.lookType}{param}')
-            
 
-    def parseParams(self, secondGeodat=None, **keywords):
+    def parseParams(self, secondGeodat=None, noLoadData=False, **keywords):
         '''
         Parse all the params needed for offsets
 
@@ -70,19 +69,20 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
         self.getOrbitPassDirection()
         self.parseRefDate()
         self.getOffsetSize()
-        self.effectivePRF()
         self.getOffsetWindowParams()
         self.getOffsetParams()
         self.getSLCSlantRange()
         self.getSLCZeroDopplerTime()
         self.getOffsetSlantRange()
         self.getOffsetZeroDopplerTime()
+        self.effectivePRF()
         self.getCenterIncidenceAngle()
         self.getEPSG()
         self.getWavelength()
         self.getGranuleNames()
-        self.getExtent()
         self.SLCSceneCenterAlongTrackSpacing()
+        self.getExtent()
+
         self.fieldDict = {'pixelOffsets': ['slantRangeOffset', 
                                            'slantRangeOffsetVariance',
                                            'alongTrackOffset',
@@ -90,7 +90,9 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
                                            'crossOffsetVariance',
                                            'correlationSurfacePeak',
                                            'snr']}
-        self.getLayers(self.fieldDict['pixelOffsets'])
+        # Load data
+        self.getLayers(self.fieldDict['pixelOffsets'], noLoadData=noLoadData)
+        #
         self.scaleFactors = {'slantRangeOffset': 1./self.SLCRangePixelSize,
                              'alongTrackOffset': 1./self.SLCAzimuthPixelSize,
                              'slantRangeOffsetVariance':
@@ -104,20 +106,6 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
                          'crossOffsetVariance': '.vc',
                          'correlationSurfacePeak': '.cc',
                          'snr': '.snr'}
-
-    # def SCLSceneCenterAlongTrackSpacing(self):
-    #     '''
-    #     Get SLC Scene Center Spacing
-
-    #     Returns
-    #     -------
-    #     None.
-
-    #     '''
-    #     productType = \
-    #         self.h5[self.product][self.bands][self.frequency][self.productType]
-    #     self.SLCAzimuthPixelSize = np.array(
-    #         productType['sceneCenterAlongTrackSpacing']).item() / self.deltaA
 
     def getOffsetZeroDopplerTime(self, secondary=False):
         '''
@@ -143,7 +131,8 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
             (self.OffsetFirstZeroDopplerTime + self.OffsetLastZeroDopplerTime)
         bands = self.h5[self.product][self.bands]
         self.zeroDopplerTimeData = np.array(
-                 bands[self.frequency][self.productType]['zeroDopplerTime'])
+            bands[self.frequency][self.productType]['zeroDopplerTime'])
+        self.OffsetAzimuthPixelSize = self.SLCAzimuthPixelSize * self.deltaA
 
     def getOffsetSlantRange(self):
         '''
@@ -162,9 +151,9 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
         self.OffsetCenterRange = 0.5 * \
             (self.OffsetNearRange + self.OffsetFarRange)
         #
-        bands = self.h5[self.product][self.bands] 
+        bands = self.h5[self.product][self.bands]
         self.slantRangeData = np.array(
-                 bands[self.frequency][self.productType]['slantRange'])
+            bands[self.frequency][self.productType]['slantRange'])
 
     def getOffsetSize(self):
         '''
@@ -187,14 +176,10 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
         procInfo = self.h5[self.product]['metadata']['processingInformation']
         frequency = procInfo['parameters'][self.productType][self.frequency]
         #
-        setattr(self, 'deltaA',
-                np.array(frequency['alongTrackSkipWindowSize']).item())
-        setattr(self, 'deltaR',
-                np.array(frequency['slantRangeSkipWindowSize']).item())
-        setattr(self, 'a0',
-                np.array(frequency['alongTrackStartPixel']).item())
-        setattr(self, 'r0',
-                np.array(frequency['slantRangeStartPixel']).item())
+        self.deltaA = np.array(frequency['alongTrackSkipWindowSize']).item()
+        self.deltaR = np.array(frequency['slantRangeSkipWindowSize']).item()
+        self.a0 = np.array(frequency['alongTrackStartPixel']).item()
+        self.r0 = np.array(frequency['slantRangeStartPixel']).item()
 
     def writeOffsetsVrt(self, vrtFile, sourceFiles, geodat1, geodat2, mask,
                         Image1=None, Image2=None, scaleFactor=1,

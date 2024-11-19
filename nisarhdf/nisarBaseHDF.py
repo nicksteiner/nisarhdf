@@ -70,10 +70,15 @@ class nisarBaseHDF():
         self.cLight = 2.99792458e8
         self.epsg = None
         #
-        self.commonParams = ['referenceOrbit', 'datetime', 'referenceGranule',
-                             'secondaryOrbit', 'secondaryDatetime',
-                             'secondaryGranule', 'frame', 'LookDirection',
-                             'PassType', 'Wavelength', 'PRF', 'epsg']
+        self.commonParams = ['referenceOrbit', 'frame', 'datetime', 
+                             'referenceGranule',
+                             'SLCNearRange', 'SLCFarRange',
+                             'SLCFirstZeroDopplerTime', 'SLCLastZeroDopplerTime']
+        if self.product not in ['GCOV', 'RSLC', 'GSLC']:
+            self.commonParams += ['secondaryOrbit', 'secondaryDatetime',
+                                  'secondaryGranule']
+        self.commonParams += ['LookDirection', 'PassType',
+                              'Wavelength', 'PRF', 'epsg']
         #
         self.noDataValuesTiff = {'connectedComponents': 65535,
                                  'coherenceMagnitude': np.nan,
@@ -140,7 +145,7 @@ class nisarBaseHDF():
     # conversion etc.
     #
 
-    def refresh(self, dataFields=None):
+    def refresh(self, dataFields=None, useNumpy=True):
         '''
         Reload data to undo any modifications
 
@@ -159,7 +164,7 @@ class nisarBaseHDF():
         if self.product in ['ROFF', 'GOFF']:
             self.getLayers(dataFields)
         else:
-            self.loadData(dataFields)
+            self.loadData(dataFields, useNumpy=useNumpy)
 
     def initTags(self, **kwargs):
         '''
@@ -207,9 +212,18 @@ class nisarBaseHDF():
         '''
         self.meta = {}
         for param in self.commonParams + self.levelParams + self.productParams:
-            self.meta[param] = getattr(self, param)
+            if hasattr(self, param):
+                self.meta[param] = getattr(self, param)
         if bands is not None:
             self.meta['bands'] = bands
+        # Now append the state vectors
+        if self.product in ['RSLC']:
+            for sv in self.orbit.stateVectors:
+                svData = self.orbit.stateVectors[sv]
+                # Convert to list
+                if type(svData) is np.ndarray:
+                    svData = list(svData)
+                self.meta[sv] = svData
 
     def printParams(self):
         '''
@@ -222,11 +236,18 @@ class nisarBaseHDF():
         '''
         # Print parameters
         for param in self.commonParams + self.levelParams + self.productParams:
-            print(f'{self.product}.{param} = {getattr(self, param)} ')
+            if hasattr(self, param):
+                print(f'{self.product}.{param} = {getattr(self, param)} ')
+            else:
+                print(f'{self.product}.{param} = None')
         # List data fields
         print('\nData Fields')
         for field in self.dataFields:
-            print(f'{self.product}.{field}')
+            if hasattr(self, field):
+                print(f'{self.product}.{field}')
+            else:
+                print(f'{self.product}.{field} = Not loaded, use '
+                      f'{self.product}.refresh() to load')
 
     def printError(self, msg):
         '''
@@ -294,11 +315,19 @@ class nisarBaseHDF():
         image = 'reference'
         if self.isSecondary:
             image = 'secondary'
+        if self.product not in ['GCOV', 'RSLC', 'GSLC']:
+            key = f'{image}ZeroDopplerStartTime'
+        else:
+            key = 'zeroDopplerStartTime'
         #
+        print(self.product, key)
         dateStr = self.parseString(
-            self.h5['identification'][f'{image}ZeroDopplerStartTime'])
+            self.h5['identification'][key])
         #
         self.datetime, self.Date = self.parseDateStr(dateStr)
+        
+        if self.product in ['GCOV', 'RSLC', 'GSLC']:
+            return
         #
         if not self.isSecondary:
             dateStr = self.parseString(
@@ -333,7 +362,8 @@ class nisarBaseHDF():
     #
 
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
-                referenceOrbit=None, secondaryOrbit=None, **keywords):
+                referenceOrbit=None, secondaryOrbit=None, noLoadData=False,
+                **keywords):
         '''
         Open hdf and save self.h5Full and truncate to self.h5
 
@@ -370,7 +400,14 @@ class nisarBaseHDF():
                 setattr(self, attr, None)
         # Open hdf file
         self.hdfFile = hdfFile
-        self.h5Full = h5py.File(hdfFile, 'r')
+        # Set page_buf_size for NISAR optimized HDFs
+        try:
+            self.h5Full = h5py.File(hdfFile, 'r', page_buf_size=512*512*16)
+        except Exception:
+            print('Could not open with page_buf_size, opening for '
+                  'non-optimized access')
+            self.h5Full = h5py.File(hdfFile, 'r')
+            
         # Truncate to remove tags common to all
         self.h5 = self.h5Full['science'][self.sar]
         # Set image name
@@ -378,6 +415,7 @@ class nisarBaseHDF():
         # Parse primary parameters.
         self.parseParams(referenceOrbit=referenceOrbit,
                          secondaryOrbit=secondaryOrbit,
+                         noLoadData=noLoadData,
                          **keywords)
 
     def getGranuleNames(self):
@@ -390,6 +428,11 @@ class nisarBaseHDF():
 
         '''
         procInfo = self.h5[self.product]['metadata']['processingInformation']
+        if self.product in ['GCOV']:
+            self.referenceGranule = \
+                self.parseString(procInfo['inputs']['l1SlcGranules'])
+            return
+        # all other products
         self.referenceGranule = \
             self.parseString(procInfo['inputs']['l1ReferenceSlcGranules'])
         self.secondaryGranule = \
@@ -419,8 +462,11 @@ class nisarBaseHDF():
         '''
         # break up long dict
         metadata = self.h5[self.product]['metadata']
-        productType =\
-            metadata['processingInformation']['parameters'][self.productType]
+        parameters = metadata['processingInformation']['parameters']
+        if self.product != 'GCOV':
+            productType = parameters[self.productType]
+        else:
+            productType = parameters['preprocessing']
         #
         self.NumberRangeLooks = self.toScalar(
             productType[self.frequency]['numberOfRangeLooks'])
@@ -451,7 +497,11 @@ class nisarBaseHDF():
         else:
             self.referenceOrbit = referenceOrbit
         #
+        if self.product in ['GCOV', 'RSLC', 'GLSC']:
+            return
+        #
         if secondaryOrbit is None:
+            self.secondaryOrbit = -1
             print("Cannot sread secondary orbit yet")
         else:
             self.secondaryOrbit = secondaryOrbit
@@ -466,17 +516,9 @@ class nisarBaseHDF():
         None.
 
         '''
-        params = self.h5[self.product]['metadata']['processingInformation'][
-            'parameters']
-        if not self.isSecondary:
-            singleLookDelta = self.toScalar(
-                params['reference']['frequencyA']['zeroDopplerTimeSpacing'])
-        else:
-            singleLookDelta = self.toScalar(
-               params['secondary']['frequencyA']['zeroDopplerTimeSpacing'])
         #
         # Compute the effective PRF
-        self.PRF = 1. / singleLookDelta
+        self.PRF = 1. / self.SLCZeroDopplerTimeSpacing
 
     def getSLCSlantRange(self):
         '''
@@ -489,12 +531,16 @@ class nisarBaseHDF():
         '''
         # save bands to shorten lines
         metadata = self.h5[self.product]['metadata']
-        parameters = metadata['processingInformation']['parameters']
         #
-        if not self.isSecondary:
-            imageParams = parameters['reference']['frequencyA']
+        if self.product not in ['GCOV']:
+            parameters = metadata['processingInformation']['parameters']
+            if not self.isSecondary:
+                imageParams = parameters['reference'][self.frequency]
+            else:
+                imageParams = parameters['secondary'][self.frequency]
         else:
-            imageParams = parameters['secondary']['frequencyA']
+            imageParams = metadata['sourceData']['swaths'][self.frequency]
+        #
         self.SLCRangeSize = self.toScalar(imageParams['numberOfRangeSamples'])
         #
         # Get near range and SLC spacing for either reference or seconeary
@@ -522,30 +568,31 @@ class nisarBaseHDF():
 
         '''
         zeroTime = {'hour': 0, 'minute': 0, 'second': 0, 'microsecond': 0}
-        metaData = self.h5[self.product]['metadata']
-        parameters = metaData['processingInformation']['parameters']
-        if secondary:
-            SLC = 'secondary'
-            self.SLCAzimuthSize = self.toScalar(
-                parameters['secondary']['frequencyA']['numberOfAzimuthLines'])
+        metadata = self.h5[self.product]['metadata']
+        if self.product not in ['GCOV']:
+            parameters = metadata['processingInformation']['parameters']
+            SLC = {True: 'secondary', False: 'reference'}[secondary]
+            imageParams = parameters[SLC][self.frequency]
         else:
-            SLC = 'reference'
-            self.SLCAzimuthSize = self.toScalar(
-                parameters['reference']['frequencyA']['numberOfAzimuthLines'])
+            imageParams = metadata['sourceData']['swaths']
+        #     
+        self.SLCAzimuthSize = self.toScalar(
+            imageParams['numberOfAzimuthLines'])
         #
         earlyTime, _ = self.parseDateStr(self.parseString(
-            parameters[SLC][self.frequency]['zeroDopplerStartTime']))
+            imageParams['zeroDopplerStartTime']))
         #
         # SLC first time
         self.SLCFirstZeroDopplerTime = \
             (earlyTime - earlyTime.replace(**zeroTime)).total_seconds()
         self.SLCZeroDopplerTimeSpacing = self.toScalar(
-            parameters[SLC][self.frequency]['zeroDopplerTimeSpacing'])
+            imageParams['zeroDopplerTimeSpacing'])
         self.SLCLastZeroDopplerTime = self.SLCFirstZeroDopplerTime + \
             (self.SLCAzimuthSize - 1) * self.SLCZeroDopplerTimeSpacing
         self.SLCMidZeroDopplerTime = (self.SLCFirstZeroDopplerTime +
                                       self.SLCLastZeroDopplerTime) * 0.5
         # Compute scene center along track spacing
+        # will automatically use the correct orbit for computation
         self.SLCSceneCenterAlongTrackSpacing()
 
     def SLCSceneCenterAlongTrackSpacing(self):
@@ -625,10 +672,14 @@ class nisarBaseHDF():
         None.
 
         '''
-        bands = self.h5[self.product][self.bands]
         # get frequency
+        if self.product not in ['GCOV']:
+            bands = self.h5[self.product][self.bands]
+        else:
+            bands = self.h5[self.product]['metadata']['sourceData']['swaths']
+        #
         self.centerFrequency = self.toScalar(
-            bands[self.frequency]['centerFrequency'])
+                bands[self.frequency]['centerFrequency'])
         # And compute the wavelength
         self.Wavelength = self.cLight / self.centerFrequency
 
@@ -646,7 +697,7 @@ class nisarBaseHDF():
             if not self.isSecondary:
                 h5OrbitGroup = \
                     self.h5[self.product]['metadata']['orbit']
-                if not SLC:
+                if self.product not in ['RSLC', 'GCOV', 'GSLC']:
                     h5OrbitGroup = h5OrbitGroup['reference']
             else:
                 h5OrbitGroup = \
@@ -667,7 +718,7 @@ class nisarBaseHDF():
     # IO stuff, extract data from hdf, read, and write files.
     #
 
-    def _writeMatchFile(self, filenameRoot, data, layer, matchType):
+    def _writeMatchFile(self, filenameRoot, data, layer, matchType, tiff=True):
         '''
         Write file with match type for each pixel (GrIMP only)
 
@@ -679,15 +730,17 @@ class nisarBaseHDF():
             DESCRIPTION.
         matchType : TYPE
             DESCRIPTION.
-
+        tiff : bool, optional
+            Write data to tiff files. The default is True.
         Returns
         -------
         None.
 
         '''
-        mt = np.zeros(np.squeeze(data[layer-1, :, :]).shape, 'byte')
-        mt[np.squeeze(data[layer-1, :, :]) > -2.e8] = matchType
-        self._writeImageData(f'{filenameRoot}.layer{layer}.mt', mt, 'u1')
+        mt = np.zeros(data.shape, 'byte')
+        mt[data > -2.e8] = matchType
+        self._writeImageData(f'{filenameRoot}.layer{layer}.mt', mt, 'u1',
+                             tiff=tiff, grimp=True, noDataValue=0)
         # write the mt vrt
         descriptions = [f'matchType {layer}']
         writeMultiBandVrt(f'{filenameRoot}.layer{layer}.mt.vrt',
@@ -696,11 +749,12 @@ class nisarBaseHDF():
                           descriptions,
                           eType=gdal.GDT_Byte,
                           geoTransform=[-0.5, 1., 0., -0.5, 0., 1.],
-                          noDataValue=0)
+                          noDataValue=0,
+                          tiff=tiff)
 
     def getProducts(self, productFields):
         '''
-        Load the product specificed product fields for offsets if not already
+        Load the product specified product fields for offsets if not already
         done.
 
         Parameters
@@ -719,7 +773,7 @@ class nisarBaseHDF():
                 print(f'getting layers for {productField}')
                 self.getLayers([productField])
 
-    def getImageData(self, productField, layer=None):
+    def getImageData(self, productField, layer=None, useNumpy=True):
         '''
         Get image data corresponding to productField and create copy as
         self.productField.
@@ -738,15 +792,22 @@ class nisarBaseHDF():
         '''
         # get bands group
         bands = self.h5[self.product][self.bands]
-        data = \
-            bands[self.frequency][self.productType][self.polarization]
+        if self.product not in ['GCOV', 'RSLC', 'GSLC']:
+            data = \
+                bands[self.frequency][self.productType][self.polarization]
+        else:
+            data = bands[self.frequency]
         # Apply layer if needed.
         if layer is not None:
             data = data[layer]
         # set data value
-        setattr(self, productField, np.array(data[productField]))
+        if useNumpy:
+            setattr(self, productField, np.array(data[productField]))
+        else:
+            setattr(self, productField, data.get(productField))
 
-    def getLayers(self, layerTypes, layers=['layer1', 'layer2', 'layer3']):
+    def getLayers(self, layerTypes, noLoadData=False,
+                  layers=['layer1', 'layer2', 'layer3']):
         '''
         Get Layers for a given set layerTypes (e.g, ['alongTrackOffset' ...]).
 
@@ -771,15 +832,28 @@ class nisarBaseHDF():
         for layerType in layerTypes:
             layerData = []
             self.dataFields.append(layerType)
-            for layer in layers:
-                layerData.append(h5Data[self.polarization][layer][layerType])
-            setattr(self, layerType, np.stack(layerData))
-        tmp = np.squeeze(getattr(self, layerTypes[0])[len(layers) - 1, :, :])
-        self.noDataLocations = np.isnan(tmp)
+            if not noLoadData:
+                for layer in layers:
+                    layerData.append(
+                        h5Data[self.polarization][layer][layerType])
+                setattr(self, layerType, np.stack(layerData))
+        if not noLoadData:
+            tmp = np.squeeze(
+                getattr(self, layerTypes[0])[len(layers) - 1, :, :])
+            self.noDataLocations = np.isnan(tmp)
+        else:
+            self.noDataLocations = np.array([])
 
-    def loadData(self, fields):
+    def loadData(self, fields, useNumpy=True, noLoadData=False):
         '''
-        Load data to np arrays.
+          Load data to np arrays.
+
+        Parameters
+        ----------
+        fields : list of str
+            Field names to sayve.
+        useNumpy : boold, optional
+            Save data as numpy instead of h5 data. The default is True.
 
         Returns
         -------
@@ -788,9 +862,15 @@ class nisarBaseHDF():
         '''
         self.dataFields = []
         for field in fields:
-            self.getImageData(field)
             self.dataFields.append(field)
-        self.noDataLocations = np.isnan(getattr(self, fields[0]))
+            if noLoadData:
+                setattr(self, field, None)
+            else:
+                self.getImageData(field, useNumpy=useNumpy)
+        if noLoadData:
+            self.noDataLocatoins = np.array([])
+        else:
+            self.noDataLocations = np.isnan(getattr(self, fields[0]))
 
     def findNoDataValue(self, band, tiff):
         '''
@@ -846,7 +926,8 @@ class nisarBaseHDF():
                   suffixes=None, layers=[1, 2, 3],
                   matchTypes=[1, 2, 3], saveMatch=False,
                   scaleToPixels=False,  geojsonName=None,
-                  geojsonNameSecondary=None):
+                  geojsonNameSecondary=None,
+                  noSuffix=False):
         '''
         Write data to binary or tiff file for all data types. Non offset
         results are saved as individual files (filenameRoot.band[.tif] which
@@ -879,7 +960,8 @@ class nisarBaseHDF():
         grimp : bool, optional
             For GrIMP compatability, force binary files with geocoded data to
             use a lower-left corner geotransform. The default is False.
-
+        noSuffix : bool, optional
+            Don't append filename suffix (1 band only). The default is False.
         Offset Only
         ------------
         suffixes : list of str, optional
@@ -904,8 +986,11 @@ class nisarBaseHDF():
         None.
 
         '''
+        if bands is None:
+            bands = self.dataFields
         # This section makes sure that interpolated fields are written as
         # regular data while offsets with layers are treated specially.
+
         isData, isDerived = False, False
         for band in bands:
             if band in self.dataFields:
@@ -921,7 +1006,8 @@ class nisarBaseHDF():
             self._writeNonOffsetData(filenameRoot,
                                      bands=bands,
                                      tiff=tiff,
-                                     grimp=grimp)
+                                     grimp=grimp,
+                                     byteOrder=byteOrder, noSuffix=noSuffix)
         else:
             self._writeOffsets(filenameRoot,
                                bands=bands,
@@ -934,7 +1020,8 @@ class nisarBaseHDF():
                                saveMatch=saveMatch,
                                scaleToPixels=scaleToPixels,
                                geojsonName=geojsonName,
-                               geojsonNameSecondary=geojsonNameSecondary)
+                               geojsonNameSecondary=geojsonNameSecondary,
+                               noSuffix=noSuffix)
 
     def _writeOffsets(self, filenameRoot,
                       bands=None,
@@ -947,7 +1034,8 @@ class nisarBaseHDF():
                       saveMatch=False,
                       scaleToPixels=False,
                       geojsonName=None,
-                      geojsonNameSecondary=None):
+                      geojsonNameSecondary=None,
+                      noSuffix=False):
         '''
         Save offsets as individual layer files with vrt for each layer that
         combines all of the bands.
@@ -984,6 +1072,8 @@ class nisarBaseHDF():
         geojsonNameSecondary : str, optional
             geojson for secondary image for GrIMP workflow. The default is
             None.
+        noSuffix : bool, optional
+            Don't append filename suffix (1 band only). The default is False.
         Returns
         -------
         None.
@@ -992,6 +1082,7 @@ class nisarBaseHDF():
         # Setup meta data
         if bands is None:
             bands = self.dataFields
+
         self.assembleMeta()
         meta = self.meta.copy()
         meta['bands'] = bands
@@ -1014,7 +1105,11 @@ class nisarBaseHDF():
                 else:
                     suffix = band
                 # Filename
-                sourceFile = f'{filenameRoot}.layer{layer}{suffix}{tiffSuffix}'
+                if noSuffix:
+                    sourceFile = f'{filenameRoot}'
+                else:
+                    sourceFile = \
+                        f'{filenameRoot}.layer{layer}{suffix}{tiffSuffix}'
                 sourceFiles.append(sourceFile)
                 descriptions.append(f'{band}')
                 # condition data
@@ -1036,7 +1131,7 @@ class nisarBaseHDF():
                 # If along track offsets save match type
                 if band == 'alongTrackOffset' and saveMatch:
                     self._writeMatchFile(filenameRoot, bandData, layer,
-                                         matchType)
+                                         matchType, tiff=tiff)
             # Save the vrt
             sy, sx = bandData.shape
             epsg = None
@@ -1058,7 +1153,7 @@ class nisarBaseHDF():
                                          geodat2=geojsonNameSecondary)
 
     def _writeNonOffsetData(self, filenameRoot, bands=None, tiff=True,
-                            byteOrder='LSB', grimp=False):
+                            byteOrder='LSB', grimp=False, noSuffix=False):
         '''
         Write non-offset data to binary or tiff file.
 
@@ -1093,7 +1188,6 @@ class nisarBaseHDF():
         # Default to all fields as bands
         if bands is None:
             bands = self.dataFields
-        # Refresh meta data
         self.assembleMeta()
         meta = self.meta.copy()
         meta['bands'] = bands
@@ -1102,7 +1196,8 @@ class nisarBaseHDF():
         sourceFiles, descriptions, dataTypes, noDataValues = [], [], [], []
         # Loop and write each field
         for band in bands:
-            filename = f'{filenameRoot}.{band}{suffix}'
+            filename = {True: f'{filenameRoot}',
+                        False: f'{filenameRoot}.{band}{suffix}'}[noSuffix]
             data = getattr(self, band)
             # Save bands nam, file, and data type
             descriptions.append(band)
@@ -1187,7 +1282,7 @@ class nisarBaseHDF():
             Data type (e.g., 'float32'). The default is none, which will
             determine the type directly from the data.
         noDataValue : number, optional
-            The no data vaalue. The default is None.
+            The no data value. The default is None.
 
         Returns
         -------
@@ -1228,6 +1323,7 @@ class nisarBaseHDF():
         del(dst_ds2)
         gc.collect()
 
+
     def _writeBinaryImageData(self, filename, data, dataType=None,
                               byteOrder="LSB", noDataValue=-2.e9, grimp=False):
         '''
@@ -1259,20 +1355,23 @@ class nisarBaseHDF():
         if dataType is None:
             dataType = str(data.dtype)
         #
-        x1 = data.astype(dataType)
-        # replace nans with noDataValue
-        x1[np.isnan(x1)] = noDataValue
-        # Swap byte order if MSB
-        if byteOrder == "MSB":
-            print('swapping')
-            x1.byteswap(True)
-        # Flip geocoded images for grimp
         if grimp and self.coordType == 'GEO':
-            x1 = np.flipud(x1)
+            # Flip geocoded images for grimp
+            data = np.flipud(data)
             self.writeGeodat(f'{filename}.geodat')
-        # Save data
+        # write line by line to avoid loading a large h5 all t once
         with open(filename, 'w') as fpOut:
-            x1.tofile(fpOut)
+            for line in data:
+                x1 = line.astype(dataType)
+                # replace nans with noDataValue
+                x1[np.isnan(x1)] = noDataValue
+                # Swap byte order if MSB
+                if byteOrder == "MSB":
+                    print('swapping')
+                    x1.byteswap(True)
+                # Save data
+                x1.tofile(fpOut)
+
     #
     # Discard outliers, apply masks and corrections.
     #
@@ -1430,10 +1529,16 @@ class nisarBaseHDF():
             incidenceAngleCube at desired points
 
         '''
+        if self.product in ['RSLC']:
+            print('incidence angle data  not provided with RSLC')
+            return
+        # Setup interpolators if needed.
         if not hasattr(self, 'incidenceAngleInterpolator'):
             self.setupDataCube('incidenceAngle', zGridPts=None)
+        # interpolate
         incidenceAngle = self.interpGrid(self.incidenceAngleInterpolator,
                                          x, y, z, maskNoData=maskNoData)
+        # save result for ouput
         if save:
             self.incidenceAngle = incidenceAngle.astype(np.float32)
             self.incidenceAngle[np.isnan(self.incidenceAngle)] = np.nan
@@ -1460,10 +1565,16 @@ class nisarBaseHDF():
             elevationAngle at desired points
 
         '''
+        if self.product in ['RSLC']:
+            print('elevation angle data  not provided with RSLC')
+            return
+        # Setup interpolators if needed.
         if not hasattr(self, 'elevationAngleInterpolator'):
             self.setupDataCube('elevationAngle', zGridPts=None)
+        # interpolate
         elevationAngle = self.interpGrid(self.elevationAngleInterpolator,
                                          x, y, z, maskNoData=maskNoData)
+        # save result for ouput
         if save:
             self.elevationAngle = elevationAngle.astype(np.float32)
         return elevationAngle
@@ -1488,11 +1599,17 @@ class nisarBaseHDF():
             groundTrackVelocity at desired points
 
         '''
+        if self.product in ['RSLC']:
+            print('groundTrackVelocit data  not provided with RSLC')
+            return
+        # Setup interpolators if needed.
         if not hasattr(self, 'groundTrackVelocityInterpolator'):
             self.setupDataCube('groundTrackVelocity', zGridPts=None)
+        # interpolate
         groundTrackVelocity = self.interpGrid(
             self.groundTrackVelocityInterpolator, x, y, z,
             maskNoData=maskNoData)
+        # save result for ouput
         if save:
             self.groundTrackVelocity = groundTrackVelocity
         return groundTrackVelocity.astype(np.float32)
@@ -1518,6 +1635,9 @@ class nisarBaseHDF():
             perpendicular and parallel components of baseline
 
         '''
+        if self.product in ['RSLC', 'GCOV']:
+            print('baseline data  not provided with RSLC')
+            return
         # Setup interpolators if needed.
         if not hasattr(self, 'perpendicularBaselineInterpolator'):
             self.setupDataCube('perpendicularBaseline', zGridPts=[0, -1])
@@ -1528,6 +1648,7 @@ class nisarBaseHDF():
                              maskNoData=maskNoData)
         bp = self.interpGrid(self.parallelBaselineInterpolator, x, y, z,
                              maskNoData=maskNoData)
+        # save result for ouput
         if save:
             self.bn = bn.astype(np.float32)
             self.bp = bp.astype(np.float32)
@@ -1555,6 +1676,9 @@ class nisarBaseHDF():
             x and y components of the along track unit vector
 
         '''
+        if self.product in ['RSLC']:
+            print('alongTrackUnitVector data  not provided with RSLC')
+            return
         # Setup interpolators if needed.
         if not hasattr(self, 'alongTrackUnitVectorXInterpolator'):
             self.setupDataCube('alongTrackUnitVectorX', zGridPts=None)
@@ -1565,6 +1689,7 @@ class nisarBaseHDF():
                               maskNoData=maskNoData)
         ATy = self.interpGrid(self.alongTrackUnitVectorYInterpolator, x, y, z,
                               maskNoData=maskNoData)
+        # save result for ouput
         if save:
             self.alongTrackUnitVectorX = ATx.astype(np.float32)
             self.alongTrackUnitVectorY = ATy.astype(np.float32)
@@ -1592,6 +1717,9 @@ class nisarBaseHDF():
              x and y components of the los unit vector
 
         '''
+        if self.product in ['RSLC']:
+            print('losUnitVector data  not provided with RSLC')
+            return
         # Setup interpolators if needed.
         if not hasattr(self, 'losUnitVectorXInterpolator'):
             self.setupDataCube('losUnitVectorX', zGridPts=None)
@@ -1602,6 +1730,7 @@ class nisarBaseHDF():
                                maskNoData=maskNoData)
         LOSy = self.interpGrid(self.losUnitVectorYInterpolator, x, y, z,
                                maskNoData=maskNoData)
+        # save result for ouput
         if save:
             self.losUnitVectorX = LOSx.astype(np.float32)
             self.losUnitVectorY = LOSy.astype(np.float32)

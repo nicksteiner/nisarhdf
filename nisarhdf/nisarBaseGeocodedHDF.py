@@ -174,18 +174,24 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
              slantRange and zeroDopplerTime coordinates
 
         '''
+        if self.product in ['GCOV']:
+            slantRange = 'slantRange'
+            zeroDoppler = 'zeroDopplerAzimuthTime'
+        else:
+            slantRange = f'{image}SlantRange'
+            zeroDoppler = f'{image}ZeroDopplerAzimuthTime'
         # Setup interpolators if needed.
-        if not hasattr(self, f'{image}SlantRange'):
-            self.setupDataCube(f'{image}SlantRange', zGridPts=None)
-        if not hasattr(self, f'{image}ZeroDopplerAzimuthTime'):
-            self.setupDataCube(f'{image}ZeroDopplerAzimuthTime', zGridPts=None)
+        if not hasattr(self, slantRange):
+            self.setupDataCube(slantRange, zGridPts=None)
+        if not hasattr(self, zeroDoppler):
+            self.setupDataCube(zeroDoppler, zGridPts=None)
         # interpolate
         slantRange = self.interpGrid(
-            getattr(self, f'{image}SlantRangeInterpolator'),
+            getattr(self, f'{slantRange}Interpolator'),
             x, y, z,
             maskNoData=maskNoData)
         zeroDopplerTime = self.interpGrid(
-            getattr(self, f'{image}ZeroDopplerAzimuthTimeInterpolator'),
+            getattr(self, f'{zeroDoppler}Interpolator'),
             x, y, z,
             maskNoData=maskNoData)
         self.slantRangeGrid = slantRange
@@ -235,7 +241,10 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
             self.h5[self.product]['metadata']['radarGrid']['projection'])
         #
         frequency = self.h5[self.product]['grids'][self.frequency]
-        products = frequency[self.productType][self.polarization]
+        if self.product in ['GUNW', 'GOFF']:
+            products = frequency[self.productType][self.polarization]
+        elif self.product in ['GCOV']:
+            products = frequency
         #
         if self.layer is not None:
             products = products[self.layer]

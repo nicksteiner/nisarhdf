@@ -56,22 +56,8 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
         for param in self.RDParams:
             self.productParams.append(f'{self.lookType}{param}')
-            
 
-   
-    def getSlantRangeData(self):
-        ''' Get slant range data '''
-        bands = self.h5[self.product][self.bands]
-        self.slantRangeData = np.array(
-            bands[self.frequency][self.productType]['slantRange'])
-
-    def getZeroDopplerTimeData(self):
-        ''' Get zero Doppler time '''
-        bands = self.h5[self.product][self.bands]
-        self.zeroDopplerTimeData = np.array(
-            bands[self.frequency][self.productType]['zeroDopplerTime'])
-            
-    def parseParams(self, secondary=False, **keywords):
+    def parseParams(self, secondary=False, noLoadData=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -86,11 +72,9 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         self.parseRefDate()
         self.getNumberOfLooks()
         self.getSLCSlantRange()
-        self.getSLCZeroDopplerTime()
-        
+        self.getSLCZeroDopplerTime(secondary=secondary)
         self.getMLSize()
         self.getMLSlantRange()
-        
         self.effectivePRF()
         self.getRangeErrorCorrection()
         if not secondary:
@@ -125,7 +109,7 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
                              referenceOrbitXML=self.secondaryOrbitXML,
                              debug=self.debug)
             self.secondary.h5 = self.h5
-            self.secondary.parseParams(secondary=True)
+            self.secondary.parseParams(secondary=True, referenceOrbit=self.secondaryOrbit)
             #self.secondaryDatetime = self.secondary.datetime
             #self.secondaryDate = self.secondary.datetime
             self.dT = np.round((self.secondaryDatetime -
@@ -137,73 +121,5 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         fields = ['coherenceMagnitude', 'connectedComponents',
                   'ionospherePhaseScreen', 'ionospherePhaseScreenUncertainty',
                   'unwrappedPhase']
-        self.loadData(fields)
+        self.loadData(fields, noLoadData=noLoadData)
 
-    # def SCLSceneCenterAlongTrackSpacing(self):
-    #     '''
-    #     Get SLC Scene Center Spacing
-
-    #     Returns
-    #     -------
-    #     None.
-
-    #     '''
-    #     productType = \
-    #         self.h5[self.product][self.bands][self.frequency][self.productType]
-    #     MLAzimuthSize = np.array(
-    #         productType['sceneCenterAlongTrackSpacing']).item()
-    #     self.SLCAzimuthPixelSize = MLAzimuthSize / self.NumberRangeLooks
-
-    # def writeData(self, filename, productField, includeVRT=True,
-    #               secondary=True,
-    #               includeGeojson=True,
-    #               geojsonName=None, geojsonNameSecondary=None,
-    #               dataType='>f4',
-    #               metaData=None):
-    #     '''
-
-    #     Parameters
-    #     ----------
-    #     filename : str
-    #         Name of file to write data to.
-    #     productField : str
-    #         Key for data (e.g., unwrapped phase)
-    #     includeVRT : Bool, optional
-    #         Include filename.vrt file. The default is True.
-    #     includeGeodat : TYPE, optional
-    #         Include GrIMP filename.geodat file. The default is True.
-    #     dataType : str, optional
-    #         Data type to save as. The default is '>f4'.
-
-    #     Returns
-    #     -------
-    #     None.
-
-    #     '''
-    #     if not hasattr(self, productField):
-    #         self.getImageData(productField)
-    #     #
-    #     # Write the image data to a floating point file
-    #     self._writeImageData(filename, getattr(self, productField), dataType)
-    #     #
-    #     # write geodat in same dir as filename with geodatNRxNA unless other
-    #     if includeGeojson:
-    #         self.writeGeodatGeojson(filename=geojsonName,
-    #                                 path=os.path.dirname(filename),
-    #                                 secondary=secondary)
-    #     #
-    #     # Write an accompanyting vrt file if requested filename.vrt
-    #     if includeVRT:
-    #         if '>' in dataType:
-    #             byteOrder = 'MSB'
-    #         else:
-    #             byteOrder = 'LSB'
-    #         # pixel centered, lower left corner, pixel units
-    #         geoTransform = [-0.5, 1., 0., -0.5, 0., 1.]
-    #         writeMultiBandVrt(f'{filename}.vrt',
-    #                           self.MLRangeSize, self.MLAzimuthSize,
-    #                           [os.path.basename(filename)],
-    #                           [productField],
-    #                           metaData=metaData,
-    #                           byteOrder=byteOrder,
-    #                           geoTransform=geoTransform)

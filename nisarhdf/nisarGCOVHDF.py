@@ -49,7 +49,7 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
                                       secondaryOrbitXML=secondaryOrbitXML)
         self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
 
-    def parseParams(self, secondary=False, **keywords):
+    def parseParams(self, secondary=False, noLoadData=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -66,7 +66,6 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         self.parseRefDate()
         self.getGeoCoordinates()
         self.getWavelength()
- 
         self.getGranuleNames()
         self.getEPSG()
 
@@ -79,4 +78,4 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
                       'listOfCovarianceTerms']]
         #
         fields += ['mask', 'numberOfLooks', 'rtcGammaToSigmaFactor']
-        self.loadData(fields)
+        self.loadData(fields, noLoadData=noLoadData)

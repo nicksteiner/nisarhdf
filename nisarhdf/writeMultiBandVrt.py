@@ -110,8 +110,8 @@ def _createTiffVrt(newVRTFile, sourceFiles, descriptions, noDataValues,
     # Build the vrt
     options = gdal.BuildVRTOptions(options=["relativeToVRT=1"], separate=True)
     ds = gdal.BuildVRT(newVRTFile, sourceFiles, options=options)
-
-    if metaData is not None:
+    # print('meta', metaData)
+    if bool(metaData):
         ds.SetMetadata(metaData)
     # This should be unnecesary since tiff should have info.
     if epsg is not None:
