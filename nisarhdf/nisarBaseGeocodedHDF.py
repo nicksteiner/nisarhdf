@@ -41,7 +41,7 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
         self.coordType = 'GEO'
         nisarBaseHDF.__init__(self, **keywords)
 
-        self.levelParams = []
+        self.levelParams = ['xSize', 'ySize']
 
     def getEPSG(self):
         '''

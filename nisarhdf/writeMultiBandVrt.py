@@ -7,6 +7,7 @@ Created on Fri Oct  4 08:25:27 2024
 """
 from osgeo import gdal, osr
 import os
+import numpy as np
 
 # gdalTypes = {'Float32': gdal.GDT_Float32,
 #              'Float64': gdal.GDT_Float64,
@@ -126,7 +127,8 @@ def _createTiffVrt(newVRTFile, sourceFiles, descriptions, noDataValues,
         #
         band = ds.GetRasterBand(bandNumber)
         band.SetMetadataItem("Description", description)
-        band.SetNoDataValue(noDataValue)
+        if not isinstance(noDataValue, np.complex64):
+            band.SetNoDataValue(noDataValue)
     ds.FlushCache()
     ds = None
 
@@ -191,6 +193,7 @@ def _createBinaryVrt(newVRTFile, xSize, ySize, sourceFiles, descriptions,
         vrt.AddBand(dataType, options=options)
         band = vrt.GetRasterBand(bandNumber)
         band.SetMetadataItem("Description", description)
-        band.SetNoDataValue(noDataValue)
+        if not isinstance(noDataValue, np.complex64):
+            band.SetNoDataValue(noDataValue)
     # Close the vrt
     vrt = None

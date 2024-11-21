@@ -92,6 +92,8 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
                                            'snr']}
         # Load data
         self.getLayers(self.fieldDict['pixelOffsets'], noLoadData=noLoadData)
+        self.loadData(['digitalElevationModel'], noLoadData=noLoadData,
+                      resetFields=False)
         #
         self.scaleFactors = {'slantRangeOffset': 1./self.SLCRangePixelSize,
                              'alongTrackOffset': 1./self.SLCAzimuthPixelSize,

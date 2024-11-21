@@ -29,6 +29,31 @@ gdalTypes = {'float32': gdal.GDT_Float32,
              'uint8': gdal.GDT_Byte}
 
 
+class pixelOffsets():
+    '''
+    Class to hold interogram pixel offsets
+    '''
+
+    def __init__(self, h5Object, polarization, product,
+                 bands=['alongTrackOffset', 'slantRangeOffset',
+                        'correlationSurfacePeak']):
+        self.dataFields = []
+        for band in bands:
+            print(band)
+            data = np.array(h5Object[polarization][band])
+            print(data.shape)
+            setattr(self, band, data)
+            self.dataFields.append(band)
+        if product in ['RIFG', 'RUNW']:
+            self.zeroDopplerTime = h5Object['zeroDopplerTime']
+            self.slantRange = h5Object['slantRange']
+        elif product in ['GUNW']:
+            self.xCoordinate = h5Object['xCoordinates']
+            self.yCoordinate = h5Object['yCoordinates']
+        else:
+            print('fInvalid product type ({product}) in pixelOffsets')
+
+
 class nisarBaseHDF():
     '''
     Abstract class to define parser for NISAR HDF products.
@@ -85,7 +110,8 @@ class nisarBaseHDF():
                                  'ionospherePhaseScreen': np.nan,
                                  'ionospherePhaseScreenUncertainty': np.nan,
                                  'unwrappedPhase': np.nan,
-                                 'wrappedInterferogram': np.nan + 1j*np.nan,
+                                 'wrappedInterferogram': 
+                                     np.complex64(np.nan + 1j*np.nan),
                                  'slantRangeOffset': np.nan,
                                  'slantRangeOffsetVariance': np.nan,
                                  'alongTrackOffset': np.nan,
@@ -99,7 +125,8 @@ class nisarBaseHDF():
                                    'ionospherePhaseScreen': -2e9,
                                    'ionospherePhaseScreenUncertainty': -2e9,
                                    'unwrappedPhase': -2e9,
-                                   'wrappedInterferogram': -2e9 + 1j * -2e9,
+                                   'wrappedInterferogram':
+                                       np.complex64(-2e9 + 1j * -2e9),
                                    'slantRangeOffset': -2e9,
                                    'slantRangeOffsetVariance': -2e9,
                                    'alongTrackOffset': -2e9,
@@ -163,6 +190,8 @@ class nisarBaseHDF():
             dataFields = self.dataFields
         if self.product in ['ROFF', 'GOFF']:
             self.getLayers(dataFields)
+            if self.product in ['ROFF']:
+                self.loadData(['digitalElevationModel'], resetFields=False)
         else:
             self.loadData(dataFields, useNumpy=useNumpy)
 
@@ -793,8 +822,11 @@ class nisarBaseHDF():
         # get bands group
         bands = self.h5[self.product][self.bands]
         if self.product not in ['GCOV', 'RSLC', 'GSLC']:
-            data = \
-                bands[self.frequency][self.productType][self.polarization]
+            if productField not in ['digitalElevationModel']:
+                data = \
+                    bands[self.frequency][self.productType][self.polarization]
+            else:
+                data = bands[self.frequency][self.productType]
         else:
             data = bands[self.frequency]
         # Apply layer if needed.
@@ -805,6 +837,17 @@ class nisarBaseHDF():
             setattr(self, productField, np.array(data[productField]))
         else:
             setattr(self, productField, data.get(productField))
+
+    def getInterferogramPixelOffsets(self):
+        '''
+        Get pixel offsets for an interogram product
+        '''
+        bands = self.h5[self.product][self.bands]
+        self.pixelOffsets = \
+            pixelOffsets(bands[self.frequency]['pixelOffsets'],
+                         self.polarization,
+                         self.product)
+        print(type(self.pixelOffsets))
 
     def getLayers(self, layerTypes, noLoadData=False,
                   layers=['layer1', 'layer2', 'layer3']):
@@ -844,7 +887,8 @@ class nisarBaseHDF():
         else:
             self.noDataLocations = np.array([])
 
-    def loadData(self, fields, useNumpy=True, noLoadData=False):
+    def loadData(self, fields, useNumpy=True, noLoadData=False,
+                 resetFields=True):
         '''
           Load data to np arrays.
 
@@ -852,15 +896,20 @@ class nisarBaseHDF():
         ----------
         fields : list of str
             Field names to sayve.
-        useNumpy : boold, optional
+        useNumpy : bool, optional
             Save data as numpy instead of h5 data. The default is True.
-
+        noLoadData : boold optional
+            Don't actually load the data (ie. meta only). The default is False.
+        resetFields : bool optional
+            Set True to start new field list. Set False when using with after
+            getLayers. The default is True.
         Returns
         -------
         None.
 
         '''
-        self.dataFields = []
+        if resetFields:
+            self.dataFields = []
         for field in fields:
             self.dataFields.append(field)
             if noLoadData:
@@ -868,7 +917,7 @@ class nisarBaseHDF():
             else:
                 self.getImageData(field, useNumpy=useNumpy)
         if noLoadData:
-            self.noDataLocatoins = np.array([])
+            self.noDataLocations = np.array([])
         else:
             self.noDataLocations = np.isnan(getattr(self, fields[0]))
 
@@ -927,7 +976,7 @@ class nisarBaseHDF():
                   matchTypes=[1, 2, 3], saveMatch=False,
                   scaleToPixels=False,  geojsonName=None,
                   geojsonNameSecondary=None,
-                  noSuffix=False):
+                  noSuffix=False, driverName='COG'):
         '''
         Write data to binary or tiff file for all data types. Non offset
         results are saved as individual files (filenameRoot.band[.tif] which
@@ -981,6 +1030,9 @@ class nisarBaseHDF():
         geojsonNameSecondary : str, optional
             geojson for secondary image for GrIMP workflow. The default is
             None.
+        driverName : str, optional
+            Gdal driver name if writing to tiff. COG or GTiff. The default
+            is 'COG'
         Returns
         -------
         None.
@@ -1007,7 +1059,9 @@ class nisarBaseHDF():
                                      bands=bands,
                                      tiff=tiff,
                                      grimp=grimp,
-                                     byteOrder=byteOrder, noSuffix=noSuffix)
+                                     byteOrder=byteOrder,
+                                     noSuffix=noSuffix,
+                                     driverName=driverName)
         else:
             self._writeOffsets(filenameRoot,
                                bands=bands,
@@ -1074,6 +1128,7 @@ class nisarBaseHDF():
             None.
         noSuffix : bool, optional
             Don't append filename suffix (1 band only). The default is False.
+ 
         Returns
         -------
         None.
@@ -1153,7 +1208,8 @@ class nisarBaseHDF():
                                          geodat2=geojsonNameSecondary)
 
     def _writeNonOffsetData(self, filenameRoot, bands=None, tiff=True,
-                            byteOrder='LSB', grimp=False, noSuffix=False):
+                            byteOrder='LSB', grimp=False, noSuffix=False,
+                            driverName='COG'):
         '''
         Write non-offset data to binary or tiff file.
 
@@ -1173,7 +1229,9 @@ class nisarBaseHDF():
         grimp : bool, optional
             For GrIMP compatability, force binary files with geocoded data to
             use a lower-left corner geotransform. The default is False.
-
+        driverName : str, optional
+            Gdal driver name if writing to tiff. COG or GTiff. The default
+            is 'COG'
         Returns
         -------
         None.
@@ -1212,7 +1270,8 @@ class nisarBaseHDF():
                                  noDataValue=noDataValue,
                                  dataType=str(data.dtype),
                                  byteOrder=byteOrder,
-                                 grimp=grimp)
+                                 grimp=grimp,
+                                 driverName=driverName)
         # Write a vrt
         sy, sx = data.shape
         writeMultiBandVrt(f'{filenameRoot}.vrt',
@@ -1227,7 +1286,7 @@ class nisarBaseHDF():
 
     def _writeImageData(self, filename, data,  byteOrder="LSB",
                         dataType=None, grimp=False, tiff=True,
-                        noDataValue=None):
+                        noDataValue=None, driverName='COG'):
         '''
         Call routine to either write data as a tiff or flat binary file.
 
@@ -1247,6 +1306,8 @@ class nisarBaseHDF():
             Write to tiff if True, otherwise flat binary. The default is True.
         noDataValue : numpber, optional
             The no data vaalue. The default is None.
+        driverName : str
+            Gdal driver name. COG or GTiff
 
         Returns
         -------
@@ -1265,10 +1326,11 @@ class nisarBaseHDF():
         else:
             self._writeTiffImageData(filename, data,
                                      dataType=None,
-                                     noDataValue=noDataValue)
+                                     noDataValue=noDataValue,
+                                     driverName=driverName)
 
     def _writeTiffImageData(self, filename, data, dataType=None,
-                            noDataValue=-2.e9):
+                            noDataValue=-2.e9, driverName='COG'):
         '''
         Write data as a tiff  file.
 
@@ -1283,7 +1345,8 @@ class nisarBaseHDF():
             determine the type directly from the data.
         noDataValue : number, optional
             The no data value. The default is None.
-
+        driverName : str
+            Gdal driver name. COG or GTiff
         Returns
         -------
         None.
@@ -1292,13 +1355,19 @@ class nisarBaseHDF():
         if dataType is None:
             dataType = str(data.dtype)
         # Tiff options
-        options = ['BIGTIFF=NO', 'COMPRESS=LZW', 'GEOTIFF_VERSION=1.1',
-                   'RESAMPLING=AVERAGE']
-        if dataType != 'complex64':
+        options = ['COMPRESS=LZW', 'GEOTIFF_VERSION=1.1']
+        if self.lookType in ['SLC']:
+            options.append('BIGTIFF=YES')
+        else:
+            options.append('BIGTIFF=NO')
+        if dataType != 'complex64' and driverName == 'COG':
             options.append('PREDICTOR=YES')
+        if driverName == 'COG':
+            options.append('RESAMPLING=AVERAGE')
         # To create COG, first create a version in memory.
         driver = gdal.GetDriverByName('MEM')
         nRows, nColumns = data.shape
+        #
         dst_ds = driver.Create('', nColumns, nRows, 1, gdalTypes[dataType])
         dst_ds.SetGeoTransform(self.getGeoTransform(tiff=True))
         # set projection
@@ -1312,10 +1381,11 @@ class nisarBaseHDF():
         # driver specific stuff to initalize band
         dst_ds.FlushCache()
         dst_ds.GetRasterBand(1).WriteArray(data)
-        dst_ds.GetRasterBand(1).SetNoDataValue(noDataValue)
+        if dataType not in ['complex64']:
+            dst_ds.GetRasterBand(1).SetNoDataValue(noDataValue)
         #
         # Create copy for the COG.
-        driver = gdal.GetDriverByName('COG')
+        driver = gdal.GetDriverByName(driverName)
         dst_ds2 = driver.CreateCopy(filename, dst_ds, options=options)
         dst_ds2.FlushCache()
         dst_ds.FlushCache()
@@ -1367,7 +1437,6 @@ class nisarBaseHDF():
                 x1[np.isnan(x1)] = noDataValue
                 # Swap byte order if MSB
                 if byteOrder == "MSB":
-                    print('swapping')
                     x1.byteswap(True)
                 # Save data
                 x1.tofile(fpOut)

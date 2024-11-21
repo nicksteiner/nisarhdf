@@ -48,6 +48,7 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
                                       referenceOrbitXML=referenceOrbitXML,
                                       secondaryOrbitXML=secondaryOrbitXML)
         self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
+        self.lookType = None
 
     def parseParams(self, secondary=False, noLoadData=False, **keywords):
         '''

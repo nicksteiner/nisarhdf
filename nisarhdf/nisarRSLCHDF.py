@@ -7,11 +7,8 @@ Created on Mon Oct 14 08:05:24 2024
 """
 
 from nisarhdf import nisarBaseRangeDopplerHDF
-from osgeo import gdal
 import os
 import numpy as np
-import rioxarray
-from nisarhdf import writeMultiBandVrt
 
 
 class nisarRSLCHDF(nisarBaseRangeDopplerHDF):

@@ -78,6 +78,7 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         self.effectivePRF()
         self.getRangeErrorCorrection()
         if not secondary:
+            self.getInterferogramPixelOffsets()
             self.getMLZeroDopplerTime()
         else:
             self.ImageName = 'secondary'
@@ -120,6 +121,6 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         self.genGeodatProperties()
         fields = ['coherenceMagnitude', 'connectedComponents',
                   'ionospherePhaseScreen', 'ionospherePhaseScreenUncertainty',
-                  'unwrappedPhase']
+                  'unwrappedPhase', 'digitalElevationModel']
         self.loadData(fields, noLoadData=noLoadData)
 

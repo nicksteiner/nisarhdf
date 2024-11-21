@@ -5,10 +5,8 @@ Created on Thu Feb  1 15:21:35 2024
 
 @author: ian
 """
-
 from nisarhdf import nisarBaseGeocodedHDF
-import numpy as np
-from nisarhdf import writeMultiBandVrt
+
 
 class nisarGOFFHDF(nisarBaseGeocodedHDF):
     '''
@@ -49,6 +47,7 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
                                       referenceOrbitXML=referenceOrbitXML,
                                       secondaryOrbitXML=secondaryOrbitXML)
         self.productParams = ['xSize', 'ySize', 'dx', 'dy']
+        self.lookType = None
 
     def parseParams(self, secondary=False, noLoadData=False, **keywords):
         '''
