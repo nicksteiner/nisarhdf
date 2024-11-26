@@ -6,12 +6,17 @@ Created on Thu Feb  1 10:14:50 2024
 @author: ian
 """
 
-__all__ = ['formatGeojson', 'nisarBaseHDF', 'nisarBaseGeocodedHDF',
+__all__ = ['autoScaleRange', 'colorBar', 'createDivider',
+           'formatGeojson', 'nisarBaseHDF',
+           'nisarBaseGeocodedHDF',
            'nisarBaseRangeDopplerHDF', 'nisarGCOVHDF', 'nisarOrbit',
            'nisarRIFGHDF', 'nisarRSLCHDF', 'nisarRUNWHDF', 'nisarGOFFHDF',
            'nisarGUNWHDF', 'nisarROFFHDF', 'readVrtAsXarray',
            'writeMultiBandVrt']
 
+from nisarhdf.nisarhdfPlottingTools import autoScaleRange
+from nisarhdf.nisarhdfPlottingTools import colorBar
+from nisarhdf.nisarhdfPlottingTools import createDivider
 from nisarhdf.formatGeojson import formatGeojson
 from nisarhdf.nisarBaseHDF import nisarBaseHDF
 from nisarhdf.nisarBaseRangeDopplerHDF import nisarBaseRangeDopplerHDF
@@ -26,3 +31,4 @@ from nisarhdf.nisarGUNWHDF import nisarGUNWHDF
 from nisarhdf.nisarROFFHDF import nisarROFFHDF
 from nisarhdf.writeMultiBandVrt import writeMultiBandVrt
 from nisarhdf.readVrtAsXarray import readVrtAsXarray
+
