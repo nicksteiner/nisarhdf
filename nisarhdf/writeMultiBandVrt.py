@@ -109,7 +109,13 @@ def _createTiffVrt(newVRTFile, sourceFiles, descriptions, noDataValues,
 
     '''
     # Build the vrt
-    options = gdal.BuildVRTOptions(options=["relativeToVRT=1"], separate=True)
+    try:
+        # This should work, but fails with gdal.3.9.1. It seems to default to
+        # relativeToVRT=1, so maybe ok to leave out, but explicitly set if 
+        # possible.
+        options = gdal.BuildVRTOptions(options=["relativeToVRT=1"], separate=True)
+    except Exception:
+        options = gdal.BuildVRTOptions(separate=True)
     ds = gdal.BuildVRT(newVRTFile, sourceFiles, options=options)
     # print('meta', metaData)
     if bool(metaData):

@@ -18,6 +18,7 @@ import rasterio
 from datetime import datetime
 from nisarhdf.writeMultiBandVrt import writeMultiBandVrt
 import gc
+import s3fs
 
 gdal.UseExceptions()
 
@@ -39,19 +40,18 @@ class pixelOffsets():
                         'correlationSurfacePeak']):
         self.dataFields = []
         for band in bands:
-            print(band)
             data = np.array(h5Object[polarization][band])
-            print(data.shape)
             setattr(self, band, data)
             self.dataFields.append(band)
         if product in ['RIFG', 'RUNW']:
             self.zeroDopplerTime = h5Object['zeroDopplerTime']
             self.slantRange = h5Object['slantRange']
         elif product in ['GUNW']:
-            self.xCoordinate = h5Object['xCoordinates']
-            self.yCoordinate = h5Object['yCoordinates']
+            self.xCoordinate = h5Object[polarization]['xCoordinates']
+            self.yCoordinate = h5Object[polarization]['yCoordinates']
         else:
-            print('fInvalid product type ({product}) in pixelOffsets')
+            self.printError(
+                f'Invalid product type ({product}) in pixelOffsets')
 
 
 class nisarBaseHDF():
@@ -390,6 +390,17 @@ class nisarBaseHDF():
     # Open hdf and extract parameters.
     #
 
+    def _openS3(self, s3link, page_buf_size=None):
+        '''
+        Open s3 link
+        '''
+        # *** Update one s3 2k token issue fixed ***
+        s3 = s3fs.S3FileSystem()
+        if page_buf_size is not None:
+            return h5py.File(s3.open(s3link, "rb"), page_buf_size=page_buf_size)
+        else:
+            return h5py.File(s3.open(s3link, "rb")) 
+
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
                 referenceOrbit=None, secondaryOrbit=None, noLoadData=False,
                 **keywords):
@@ -418,8 +429,7 @@ class nisarBaseHDF():
         None.
 
         '''
-        if not os.path.exists(hdfFile):
-            self.myerror(f'{hdfFile} does not exist')
+ 
         # Update XMLs
         for attr, value in zip(['referenceOrbitXML', 'secondaryOrbitXML'],
                                [referenceOrbitXML, secondaryOrbitXML]):
@@ -431,11 +441,20 @@ class nisarBaseHDF():
         self.hdfFile = hdfFile
         # Set page_buf_size for NISAR optimized HDFs
         try:
-            self.h5Full = h5py.File(hdfFile, 'r', page_buf_size=512*512*16)
+            if 's3' in hdfFile:
+                self.h5Full = self._openS3(hdfFile, page_buf_size=512*512*16)
+            else:
+                if not os.path.exists(hdfFile):
+                    self.printError(f'{hdfFile} does not exist')
+                    return
+                self.h5Full = h5py.File(hdfFile, 'r', page_buf_size=512*512*16)
         except Exception:
             print('Could not open with page_buf_size, opening for '
                   'non-optimized access')
-            self.h5Full = h5py.File(hdfFile, 'r')
+            if 's3' in hdfFile:
+                self.h5Full = self._openS3(hdfFile)
+            else:
+                self.h5Full = h5py.File(hdfFile, 'r')
             
         # Truncate to remove tags common to all
         self.h5 = self.h5Full['science'][self.sar]
@@ -826,6 +845,12 @@ class nisarBaseHDF():
                 data = \
                     bands[self.frequency][self.productType][self.polarization]
             else:
+                # *** THIS IS FOR BACKWARDS COMPATABILITY, CAN BE REMOVED LATER
+                if not hasattr(self, 'digitalElevationModel'):
+                    setattr(self, productField, 
+                            np.zeros((getattr(self, f'{self.lookType}AzimuthSize'),
+                                      getattr(self, f'{self.lookType}RangeSize'))))
+                    return
                 data = bands[self.frequency][self.productType]
         else:
             data = bands[self.frequency]
@@ -847,7 +872,7 @@ class nisarBaseHDF():
             pixelOffsets(bands[self.frequency]['pixelOffsets'],
                          self.polarization,
                          self.product)
-        print(type(self.pixelOffsets))
+        # print(type(self.pixelOffsets))
 
     def getLayers(self, layerTypes, noLoadData=False,
                   layers=['layer1', 'layer2', 'layer3']):
