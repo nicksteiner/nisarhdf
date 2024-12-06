@@ -192,9 +192,10 @@ def _createBinaryVrt(newVRTFile, xSize, ySize, sourceFiles, descriptions,
         # setup options with filename
         options = [f"SourceFilename={os.path.basename(sourceFile)}",
                    "relativeToVRT=1",
-                   "subclass=VRTRawRasterBand",
-                   f"BYTEORDER={byteOrder}",
-                   bytes(0)]
+                   "subclass=VRTRawRasterBand"]
+        if dataType not in [gdal.GDT_Byte]:
+            options.append(f"BYTEORDER={byteOrder}")
+        options.append(bytes(0))
         #
         vrt.AddBand(dataType, options=options)
         band = vrt.GetRasterBand(bandNumber)

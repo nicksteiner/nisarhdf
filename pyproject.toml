@@ -1,28 +1,25 @@
-[tool.poetry]
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "nisarhdf"
 version = "0.0.1"
 description = "Tools for NISAR GPS cal/val data"
-authors = ["Ian Joughin <irj@uw.edu>"]
-license = "MIT"
+authors = [
+    { name = "Ian Joughin", email = "irj@uw.edu" }
+]
+license = { text = "MIT" }
 readme = "README.md"
-homepage = "https://github.com/fastice/nisarhdf"
-repository = "https://github.com/fastice/nisarhdf"
 keywords = ["SAR", "NISAR"]
+requires-python = ">=3.8"
 
-[tool.poetry.dependencies]
-python = "^3.8"
+[tool.setuptools]
+packages = ["nisarhdf"]
 
+[project.urls]
+Homepage = "https://github.com/fastice/nisarhdf"
+Repository = "https://github.com/fastice/nisarhdf"
 
-[tool.poetry.dev-dependencies]
-ipython = "*"
-
-[tool.poetry-dynamic-versioning]
-enable = true
-vcs = "git"
-style = "semver"
-
-[build-system]
-requires = ["setuptools", "poetry-core>=1.0.9"]
-build-backend = "poetry.core.masonry.api"
-#requires = ["setuptools", "poetry-core @ git+https://github.com/python-poetry/poetry-core.git@master"]
+[project.scripts]
 
