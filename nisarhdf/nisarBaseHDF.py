@@ -541,7 +541,7 @@ class nisarBaseHDF():
         if referenceOrbit is None:
             self.referenceOrbit = \
                 self.toScalar(
-                    self.h5['identification']['absoluteOrbitNumber'])
+                    self.h5['identification']['referenceAbsoluteOrbitNumber'])
         else:
             self.referenceOrbit = referenceOrbit
         #
@@ -549,8 +549,9 @@ class nisarBaseHDF():
             return
         #
         if secondaryOrbit is None:
-            self.secondaryOrbit = -1
-            print("Cannot sread secondary orbit yet")
+            self.secondaryOrbit = \
+                self.toScalar(
+                    self.h5['identification']['secondaryAbsoluteOrbitNumber'])
         else:
             self.secondaryOrbit = secondaryOrbit
 
