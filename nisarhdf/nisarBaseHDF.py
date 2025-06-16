@@ -19,6 +19,7 @@ from datetime import datetime
 from nisarhdf.writeMultiBandVrt import writeMultiBandVrt
 import gc
 import s3fs
+import boto3
 
 gdal.UseExceptions()
 
@@ -86,6 +87,7 @@ class nisarBaseHDF():
 
         '''
         self.initTags(**keywords)
+        self.s3cred = None
         # Constants WGS84
         self.EarthRadiusMajor = 6378137.0
         self.EarthRadiusMinor = 6356752.3142
@@ -389,20 +391,46 @@ class nisarBaseHDF():
     #
     # Open hdf and extract parameters.
     #
+    def _getS3cred(self):
+        '''
+        Get S3 credentials
+        '''
+        try: 
+            s = boto3.Session()
+            self.s3cred = s.get_credentials()
+        except Exception as e:
+            print(f"Could not open s3 credentials: {e}")
+            return
 
-    def _openS3(self, s3link, page_buf_size=None):
+    def _openS3(self, s3link, page_buf_size=2 * 1024**3):
         '''
         Open s3 link
+        Parameters
+        ----------
+        s3link : str
+            s3 link.
+        page_buf_size: int
+            page buf size. The default is 2 * 1024**3.
         '''
         # *** Update one s3 2k token issue fixed ***
-        s3 = s3fs.S3FileSystem()
-        if page_buf_size is not None:
-            return h5py.File(s3.open(s3link, "rb"), page_buf_size=page_buf_size)
-        else:
-            return h5py.File(s3.open(s3link, "rb")) 
+        #s3 = s3fs.S3FileSystem()
+        if self.s3cred is None:
+            self._getS3cred()
+        #
+        region = os.getenv("AWS_REGION", "<unknown>")
+        # Open the file and return
+        return h5py.File(name=s3link,
+                         mode="r",
+                         driver="ros3",
+                         page_buf_size=page_buf_size,
+                         aws_region=region.encode(),
+                         secret_id=self.s3cred.access_key.encode(),
+                         secret_key=self.s3cred.secret_key.encode(),
+                         session_token=self.s3cred.token.encode())
+
 
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
-                referenceOrbit=None, secondaryOrbit=None, noLoadData=False,
+                referenceOrbit=None, secondaryOrbit=None, noLoadData=False, page_buf_size=2*1024**3,
                 **keywords):
         '''
         Open hdf and save self.h5Full and truncate to self.h5
@@ -429,7 +457,6 @@ class nisarBaseHDF():
         None.
 
         '''
- 
         # Update XMLs
         for attr, value in zip(['referenceOrbitXML', 'secondaryOrbitXML'],
                                [referenceOrbitXML, secondaryOrbitXML]):
@@ -442,12 +469,12 @@ class nisarBaseHDF():
         # Set page_buf_size for NISAR optimized HDFs
         try:
             if 's3' in hdfFile:
-                self.h5Full = self._openS3(hdfFile, page_buf_size=512*512*16)
+                self.h5Full = self._openS3(hdfFile)
             else:
                 if not os.path.exists(hdfFile):
                     self.printError(f'{hdfFile} does not exist')
                     return
-                self.h5Full = h5py.File(hdfFile, 'r', page_buf_size=512*512*16)
+                self.h5Full = h5py.File(hdfFile, 'r', page_buf_size=page_buf_size)
         except Exception:
             print('Could not open with page_buf_size, opening for '
                   'non-optimized access')
@@ -539,9 +566,11 @@ class nisarBaseHDF():
             self.frame = frame
         #
         if referenceOrbit is None:
+
             self.referenceOrbit = \
                 self.toScalar(
                     self.h5['identification']['referenceAbsoluteOrbitNumber'])
+       
         else:
             self.referenceOrbit = referenceOrbit
         #
@@ -549,9 +578,13 @@ class nisarBaseHDF():
             return
         #
         if secondaryOrbit is None:
-            self.secondaryOrbit = \
-                self.toScalar(
-                    self.h5['identification']['secondaryAbsoluteOrbitNumber'])
+            # This try/except handles change in key so older products continue to work
+            try:
+                self.secondaryOrbit = \
+                    self.toScalar(
+                        self.h5['identification']['secondaryAbsoluteOrbitNumber'])
+            except Exception:
+                print('Can not read secondary orbit for this product version')
         else:
             self.secondaryOrbit = secondaryOrbit
 
