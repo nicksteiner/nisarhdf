@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nisarhdf"
-version = "0.0.1"
+version = "0.0.2"
 description = "Tools for NISAR GPS cal/val data"
 authors = [
     { name = "Ian Joughin", email = "irj@uw.edu" }
@@ -13,6 +13,22 @@ license = { text = "MIT" }
 readme = "README.md"
 keywords = ["SAR", "NISAR"]
 requires-python = ">=3.8"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "h5py",
+    "pyproj",
+    "geopandas",
+    "rasterio",
+    "matplotlib",
+    "s3fs",
+    "boto3",
+    "geojson",
+    "rioxarray",
+    "gdal",
+    "getpass"
+]
 
 [tool.setuptools]
 packages = ["nisarhdf"]
