@@ -20,6 +20,8 @@ from nisarhdf.writeMultiBandVrt import writeMultiBandVrt
 import gc
 import s3fs
 import boto3
+import requests
+import io
 
 gdal.UseExceptions()
 
@@ -402,6 +404,45 @@ class nisarBaseHDF():
             print(f"Could not open s3 credentials: {e}")
             return
 
+
+    def _openHTTPInMemory(self, asf_url, verbose=True):
+        """
+        Download a NISAR ASF file into memory and open with h5py.
+        Does not use ros3 (only sec2), so the file is fully read into RAM.
+        
+        Parameters:
+            asf_url (str): The original ASF redirect URL
+            verbose (bool): Print debug output
+        
+        Returns:
+            h5py.File object
+        """
+        if verbose:
+            print(f"[INFO] Resolving redirect: {asf_url}")
+        
+        # Get presigned S3 URL
+        response = requests.get(asf_url, allow_redirects=False)
+        if response.status_code not in (301, 302, 303):
+            raise RuntimeError(f"Unexpected status code: {response.status_code}")
+        presigned_url = response.headers['Location']
+        
+        if verbose:
+            print(f"[INFO] Downloading from: {presigned_url}")
+        
+        # Stream into memory
+        s3_response = requests.get(presigned_url, stream=True)
+        s3_response.raise_for_status()
+        
+        memory_file = io.BytesIO()
+        for chunk in s3_response.iter_content(chunk_size=8192):
+            memory_file.write(chunk)
+        memory_file.seek(0)  # rewind
+        
+        if verbose:
+            print("[INFO] File downloaded into memory, opening with h5py...")
+
+        return h5py.File(memory_file, 'r')
+
     def _openS3(self, s3link, page_buf_size=2 * 1024**3):
         '''
         Open s3 link
@@ -468,8 +509,11 @@ class nisarBaseHDF():
         self.hdfFile = hdfFile
         # Set page_buf_size for NISAR optimized HDFs
         try:
+            
             if 's3' in hdfFile:
                 self.h5Full = self._openS3(hdfFile)
+            elif 'https' in hdfFile:
+                self.h5Full = self._openHTTPInMemory(hdfFile)
             else:
                 if not os.path.exists(hdfFile):
                     self.printError(f'{hdfFile} does not exist')

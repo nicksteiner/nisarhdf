@@ -23,11 +23,9 @@ dependencies = [
     "rasterio",
     "matplotlib",
     "s3fs",
-    "boto3",
     "geojson",
     "rioxarray",
-    "gdal",
-    "getpass"
+    "gdal"
 ]
 
 [tool.setuptools]
