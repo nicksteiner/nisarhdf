@@ -83,12 +83,14 @@ class nisarBaseHDF():
             hdf key.. The default is None.
         productData : TYPE, optional
             Dhdf key.. The default is 'unwrappedPhase'.
+    
         Returns
         -------
         None.
 
         '''
         self.initTags(**keywords)
+        # Should be set, but just in case
         self.s3cred = None
         # Constants WGS84
         self.EarthRadiusMajor = 6378137.0
@@ -98,6 +100,8 @@ class nisarBaseHDF():
                   self.EarthRadiusMinor) / self.EarthRadiusMajor
         self.cLight = 2.99792458e8
         self.epsg = None
+        self.memory_file = None
+        self.h5Full = None
         #
         self.commonParams = ['referenceOrbit', 'frame', 'datetime', 
                              'referenceGranule',
@@ -433,19 +437,59 @@ class nisarBaseHDF():
         s3_response = requests.get(presigned_url, stream=True)
         s3_response.raise_for_status()
         
-        memory_file = io.BytesIO()
-        for chunk in s3_response.iter_content(chunk_size=8192):
-            memory_file.write(chunk)
-        memory_file.seek(0)  # rewind
+        self.memory_file = io.BytesIO()
+        for chunk in s3_response.iter_content(chunk_size=1048576):
+            self.memory_file.write(chunk)
+        self.memory_file.seek(0)  # rewind
         
         if verbose:
             print("[INFO] File downloaded into memory, opening with h5py...")
 
-        return h5py.File(memory_file, 'r')
+        return h5py.File(self.memory_file, 'r')
+
+    def _openS3InMemory(self, s3url, verbose=True):
+        """
+        Download an S3 HDF5 file into memory and open with h5py.
+        This avoids using the ros3 driver by using boto3 + BytesIO.
+    
+        Parameters:
+            s3url (str): e.g., 's3://my-bucket/path/to/file.h5'
+            verbose (bool): Show download progress/debug info
+    
+        Returns:
+            h5py.File object
+        """
+        if s3url.startswith("s3://"):
+            s3url = s3url[5:]
+        bucket, key = s3url.split("/", 1)
+    
+        if self.s3cred is None:
+            self._getS3cred()
+    
+        if verbose:
+            print(f"[INFO] Downloading s3://{bucket}/{key} into memory...")
+    
+        # Set up boto3 session with temp credentials
+        session = boto3.Session(
+            aws_access_key_id=self.s3cred.access_key,
+            aws_secret_access_key=self.s3cred.secret_key,
+            aws_session_token=self.s3cred.token,
+            region_name=os.getenv("AWS_REGION", "us-west-2"),
+        )
+        s3 = session.client("s3")
+        # Download the file into a BytesIO buffer
+        self.memory_file = io.BytesIO()
+        s3.download_fileobj(Bucket=bucket, Key=key, Fileobj=self.memory_file)
+        self.memory_file.seek(0)
+    
+        if verbose:
+            print("[INFO] File downloaded into memory, opening with h5py...")
+    
+        return h5py.File(self.memory_file, "r")
 
     def _openS3(self, s3link, page_buf_size=2 * 1024**3):
         '''
-        Open s3 link
+        Open s3 link using ros3. Leaving to document, but switching to _openS3InMemory
         Parameters
         ----------
         s3link : str
@@ -460,6 +504,7 @@ class nisarBaseHDF():
         #
         region = os.getenv("AWS_REGION", "<unknown>")
         # Open the file and return
+        print(f'Opening {s3link} with ros3')
         return h5py.File(name=s3link,
                          mode="r",
                          driver="ros3",
@@ -471,7 +516,8 @@ class nisarBaseHDF():
 
 
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
-                referenceOrbit=None, secondaryOrbit=None, noLoadData=False, page_buf_size=2*1024**3,
+                referenceOrbit=None, secondaryOrbit=None, noLoadData=False, closeH5=False, page_buf_size=2*1024**3,
+                useRos3=False,
                 **keywords):
         '''
         Open hdf and save self.h5Full and truncate to self.h5
@@ -490,6 +536,8 @@ class nisarBaseHDF():
         secondaryOrbit : int, optional
             Override secondary orbit in HDF (used in development where missing
             in hdf). The default is None.
+        useRos3: Boolean, optional
+            Use ros3 driver for s3 files. The default is False
         **keywords : TYPE
             keywords to pass to parse params.
 
@@ -509,24 +557,21 @@ class nisarBaseHDF():
         self.hdfFile = hdfFile
         # Set page_buf_size for NISAR optimized HDFs
         try:
-            
             if 's3' in hdfFile:
-                self.h5Full = self._openS3(hdfFile)
+                if useRos3:
+                    self.h5Full = self._openS3(hdfFile)
+                else:
+                    self.h5Full = self._openS3InMemory(hdfFile)
             elif 'https' in hdfFile:
                 self.h5Full = self._openHTTPInMemory(hdfFile)
             else:
                 if not os.path.exists(hdfFile):
                     self.printError(f'{hdfFile} does not exist')
                     return
-                self.h5Full = h5py.File(hdfFile, 'r', page_buf_size=page_buf_size)
+                self.h5Full = h5py.File(hdfFile, 'r')
         except Exception:
             print('Could not open with page_buf_size, opening for '
                   'non-optimized access')
-            if 's3' in hdfFile:
-                self.h5Full = self._openS3(hdfFile)
-            else:
-                self.h5Full = h5py.File(hdfFile, 'r')
-            
         # Truncate to remove tags common to all
         self.h5 = self.h5Full['science'][self.sar]
         # Set image name
@@ -536,6 +581,8 @@ class nisarBaseHDF():
                          secondaryOrbit=secondaryOrbit,
                          noLoadData=noLoadData,
                          **keywords)
+        if closeH5:
+            self.close()
 
     def getGranuleNames(self):
         '''
@@ -2198,3 +2245,19 @@ class nisarBaseHDF():
         # Error to minimize
         error = 1.0 - np.dot(txy, txy) / ReMajorZ2 - (tz**2) / ReMinorZ2
         return error, t
+
+    def close(self):
+        try:
+            self.h5Full.close()
+        except Exception:
+            pass
+        try:
+            if self.memory_file is not None:
+                self.memory_file.close()
+        except Exception:
+            pass
+        self.h5Full = None
+        self.memory_file = None
+
+    def __del__(self):
+        self.close()  # Safe way to ensure cleanup if forgotten
