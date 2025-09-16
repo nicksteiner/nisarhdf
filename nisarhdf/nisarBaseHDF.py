@@ -18,7 +18,7 @@ import rasterio
 from datetime import datetime
 from nisarhdf.writeMultiBandVrt import writeMultiBandVrt
 import gc
-import s3fs
+# import s3fs
 import boto3
 import requests
 import io
@@ -83,7 +83,7 @@ class nisarBaseHDF():
             hdf key.. The default is None.
         productData : TYPE, optional
             Dhdf key.. The default is 'unwrappedPhase'.
-    
+
         Returns
         -------
         None.
@@ -102,11 +102,17 @@ class nisarBaseHDF():
         self.epsg = None
         self.memory_file = None
         self.h5Full = None
+        # this only get set true for GCOV
+        self.dB = False
+        self.sigma0 = False
         #
-        self.commonParams = ['referenceOrbit', 'frame', 'datetime', 
+        self.commonParams = ['referenceOrbit',
+                             'frame',
+                             'datetime',
                              'referenceGranule',
                              'SLCNearRange', 'SLCFarRange',
-                             'SLCFirstZeroDopplerTime', 'SLCLastZeroDopplerTime']
+                             'SLCFirstZeroDopplerTime',
+                             'SLCLastZeroDopplerTime']
         if self.product not in ['GCOV', 'RSLC', 'GSLC']:
             self.commonParams += ['secondaryOrbit', 'secondaryDatetime',
                                   'secondaryGranule']
@@ -118,7 +124,7 @@ class nisarBaseHDF():
                                  'ionospherePhaseScreen': np.nan,
                                  'ionospherePhaseScreenUncertainty': np.nan,
                                  'unwrappedPhase': np.nan,
-                                 'wrappedInterferogram': 
+                                 'wrappedInterferogram':
                                      np.complex64(np.nan + 1j*np.nan),
                                  'slantRangeOffset': np.nan,
                                  'slantRangeOffsetVariance': np.nan,
@@ -362,7 +368,7 @@ class nisarBaseHDF():
             self.h5['identification'][key])
         #
         self.datetime, self.Date = self.parseDateStr(dateStr)
-        
+
         if self.product in ['GCOV', 'RSLC', 'GSLC']:
             return
         #
@@ -401,47 +407,47 @@ class nisarBaseHDF():
         '''
         Get S3 credentials
         '''
-        try: 
+        try:
             s = boto3.Session()
             self.s3cred = s.get_credentials()
         except Exception as e:
             print(f"Could not open s3 credentials: {e}")
             return
 
-
     def _openHTTPInMemory(self, asf_url, verbose=True):
         """
         Download a NISAR ASF file into memory and open with h5py.
         Does not use ros3 (only sec2), so the file is fully read into RAM.
-        
+
         Parameters:
             asf_url (str): The original ASF redirect URL
             verbose (bool): Print debug output
-        
+
         Returns:
             h5py.File object
         """
         if verbose:
             print(f"[INFO] Resolving redirect: {asf_url}")
-        
+
         # Get presigned S3 URL
         response = requests.get(asf_url, allow_redirects=False)
         if response.status_code not in (301, 302, 303):
-            raise RuntimeError(f"Unexpected status code: {response.status_code}")
+            raise RuntimeError(
+                f"Unexpected status code: {response.status_code}")
         presigned_url = response.headers['Location']
-        
+
         if verbose:
             print(f"[INFO] Downloading from: {presigned_url}")
-        
+
         # Stream into memory
         s3_response = requests.get(presigned_url, stream=True)
         s3_response.raise_for_status()
-        
+
         self.memory_file = io.BytesIO()
         for chunk in s3_response.iter_content(chunk_size=1048576):
             self.memory_file.write(chunk)
         self.memory_file.seek(0)  # rewind
-        
+
         if verbose:
             print("[INFO] File downloaded into memory, opening with h5py...")
 
@@ -451,24 +457,24 @@ class nisarBaseHDF():
         """
         Download an S3 HDF5 file into memory and open with h5py.
         This avoids using the ros3 driver by using boto3 + BytesIO.
-    
+
         Parameters:
             s3url (str): e.g., 's3://my-bucket/path/to/file.h5'
             verbose (bool): Show download progress/debug info
-    
+
         Returns:
             h5py.File object
         """
         if s3url.startswith("s3://"):
             s3url = s3url[5:]
         bucket, key = s3url.split("/", 1)
-    
+
         if self.s3cred is None:
             self._getS3cred()
-    
+
         if verbose:
             print(f"[INFO] Downloading s3://{bucket}/{key} into memory...")
-    
+
         # Set up boto3 session with temp credentials
         session = boto3.Session(
             aws_access_key_id=self.s3cred.access_key,
@@ -481,15 +487,16 @@ class nisarBaseHDF():
         self.memory_file = io.BytesIO()
         s3.download_fileobj(Bucket=bucket, Key=key, Fileobj=self.memory_file)
         self.memory_file.seek(0)
-    
+
         if verbose:
             print("[INFO] File downloaded into memory, opening with h5py...")
-    
+
         return h5py.File(self.memory_file, "r")
 
     def _openS3(self, s3link, page_buf_size=2 * 1024**3):
         '''
-        Open s3 link using ros3. Leaving to document, but switching to _openS3InMemory
+        Open s3 link using ros3. Leaving to document, but switching to
+        _openS3InMemory
         Parameters
         ----------
         s3link : str
@@ -498,7 +505,6 @@ class nisarBaseHDF():
             page buf size. The default is 2 * 1024**3.
         '''
         # *** Update one s3 2k token issue fixed ***
-        #s3 = s3fs.S3FileSystem()
         if self.s3cred is None:
             self._getS3cred()
         #
@@ -514,9 +520,9 @@ class nisarBaseHDF():
                          secret_key=self.s3cred.secret_key.encode(),
                          session_token=self.s3cred.token.encode())
 
-
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
-                referenceOrbit=None, secondaryOrbit=None, noLoadData=False, closeH5=False, page_buf_size=2*1024**3,
+                referenceOrbit=None, secondaryOrbit=None, noLoadData=False,
+                closeH5=False, page_buf_size=2*1024**3,
                 useRos3=False,
                 **keywords):
         '''
@@ -547,6 +553,7 @@ class nisarBaseHDF():
 
         '''
         # Update XMLs
+
         for attr, value in zip(['referenceOrbitXML', 'secondaryOrbitXML'],
                                [referenceOrbitXML, secondaryOrbitXML]):
             if value is not None:
@@ -629,15 +636,17 @@ class nisarBaseHDF():
         # break up long dict
         metadata = self.h5[self.product]['metadata']
         parameters = metadata['processingInformation']['parameters']
-        if self.product != 'GCOV':
-            productType = parameters[self.productType]
+        if self.product in ['GCOV']:
+            # number of looks is variable
+            self.NumberRangeLooks = -1
+            self.NumberAzimuthLooks = -1
         else:
             productType = parameters['preprocessing']
         #
-        self.NumberRangeLooks = self.toScalar(
-            productType[self.frequency]['numberOfRangeLooks'])
-        self.NumberAzimuthLooks = self.toScalar(
-             productType[self.frequency]['numberOfAzimuthLooks'])
+            self.NumberRangeLooks = self.toScalar(
+                productType[self.frequency]['numberOfRangeLooks'])
+            self.NumberAzimuthLooks = self.toScalar(
+                productType[self.frequency]['numberOfAzimuthLooks'])
 
     def getOrbitAndFrame(self, referenceOrbit=None,
                          secondaryOrbit=None, frame=None):
@@ -657,11 +666,14 @@ class nisarBaseHDF():
             self.frame = frame
         #
         if referenceOrbit is None:
+            if self.product in ['GCOV']:
+                orbit = self.toScalar(
+                    self.h5['identification']['absoluteOrbitNumber'])
 
-            self.referenceOrbit = \
-                self.toScalar(
+            else:
+                orbit = self.toScalar(
                     self.h5['identification']['referenceAbsoluteOrbitNumber'])
-       
+            self.referenceOrbit = orbit
         else:
             self.referenceOrbit = referenceOrbit
         #
@@ -669,11 +681,11 @@ class nisarBaseHDF():
             return
         #
         if secondaryOrbit is None:
-            # This try/except handles change in key so older products continue to work
+            # This try/except handles change in key so older products
+            # continue to work
             try:
-                self.secondaryOrbit = \
-                    self.toScalar(
-                        self.h5['identification']['secondaryAbsoluteOrbitNumber'])
+                self.secondaryOrbit = self.toScalar(
+                    self.h5['identification']['secondaryAbsoluteOrbitNumber'])
             except Exception:
                 print('Can not read secondary orbit for this product version')
         else:
@@ -748,7 +760,7 @@ class nisarBaseHDF():
             imageParams = parameters[SLC][self.frequency]
         else:
             imageParams = metadata['sourceData']['swaths']
-        #     
+        #
         self.SLCAzimuthSize = self.toScalar(
             imageParams['numberOfAzimuthLines'])
         #
@@ -875,6 +887,7 @@ class nisarBaseHDF():
             else:
                 h5OrbitGroup = \
                     self.h5[self.product]['metadata']['orbit']['secondary']
+            print(h5OrbitGroup)
             orbit = nisarOrbit(
                 h5OrbitGroup=h5OrbitGroup,
                 firstZeroDopplerTime=self.SLCFirstZeroDopplerTime,
@@ -972,9 +985,11 @@ class nisarBaseHDF():
             else:
                 # *** THIS IS FOR BACKWARDS COMPATABILITY, CAN BE REMOVED LATER
                 if not hasattr(self, 'digitalElevationModel'):
-                    setattr(self, productField, 
-                            np.zeros((getattr(self, f'{self.lookType}AzimuthSize'),
-                                      getattr(self, f'{self.lookType}RangeSize'))))
+                    setattr(self, productField,
+                            np.zeros((getattr(self,
+                                              f'{self.lookType}AzimuthSize'),
+                                      getattr(self,
+                                              f'{self.lookType}RangeSize'))))
                     return
                 data = bands[self.frequency][self.productType]
         else:
@@ -1126,7 +1141,8 @@ class nisarBaseHDF():
                   matchTypes=[1, 2, 3], saveMatch=False,
                   scaleToPixels=False,  geojsonName=None,
                   geojsonNameSecondary=None,
-                  noSuffix=False, driverName='COG'):
+                  noSuffix=False, driverName='COG',
+                  downsampleFactor=1, dB=False, sigma0=False):
         '''
         Write data to binary or tiff file for all data types. Non offset
         results are saved as individual files (filenameRoot.band[.tif] which
@@ -1211,7 +1227,8 @@ class nisarBaseHDF():
                                      grimp=grimp,
                                      byteOrder=byteOrder,
                                      noSuffix=noSuffix,
-                                     driverName=driverName)
+                                     driverName=driverName,
+                                     downsampleFactor=downsampleFactor, dB=dB)
         else:
             self._writeOffsets(filenameRoot,
                                bands=bands,
@@ -1278,7 +1295,7 @@ class nisarBaseHDF():
             None.
         noSuffix : bool, optional
             Don't append filename suffix (1 band only). The default is False.
- 
+
         Returns
         -------
         None.
@@ -1359,7 +1376,8 @@ class nisarBaseHDF():
 
     def _writeNonOffsetData(self, filenameRoot, bands=None, tiff=True,
                             byteOrder='LSB', grimp=False, noSuffix=False,
-                            driverName='COG'):
+                            driverName='COG', downsampleFactor=1,
+                            dB=False, sigma0=False):
         '''
         Write non-offset data to binary or tiff file.
 
@@ -1387,6 +1405,11 @@ class nisarBaseHDF():
         None.
 
         '''
+        
+        
+        Propagate dB, and sigma0. Test. move helpers from gcove if needed.
+        
+        
         #
         if tiff and byteOrder != 'LSB':
             self.printError(f'Byte order {byteOrder} not supported for tiffs')
@@ -1407,6 +1430,11 @@ class nisarBaseHDF():
             filename = {True: f'{filenameRoot}',
                         False: f'{filenameRoot}.{band}{suffix}'}[noSuffix]
             data = getattr(self, band)
+            geoTransform = self.getGeoTransform(grimp=grimp, tiff=tiff)
+            if downsampleFactor > 1:
+                data = self.downsample(data, downsampleFactor)
+                geoTransform = self.rescale_geoTransform(geoTransform,
+                                                         downsampleFactor)
             # Save bands nam, file, and data type
             descriptions.append(band)
             sourceFiles.append(filename)
@@ -1421,7 +1449,8 @@ class nisarBaseHDF():
                                  dataType=str(data.dtype),
                                  byteOrder=byteOrder,
                                  grimp=grimp,
-                                 driverName=driverName)
+                                 driverName=driverName,
+                                 geoTransform=geoTransform)
         # Write a vrt
         sy, sx = data.shape
         writeMultiBandVrt(f'{filenameRoot}.vrt',
@@ -1429,14 +1458,13 @@ class nisarBaseHDF():
                           sourceFiles,
                           descriptions,
                           eType=dataTypes,
-                          geoTransform=self.getGeoTransform(grimp=grimp,
-                                                            tiff=tiff),
+                          geoTransform=geoTransform,
                           noDataValue=noDataValues, metaData=meta,
                           byteOrder=byteOrder, tiff=tiff, epsg=self.epsg)
 
     def _writeImageData(self, filename, data,  byteOrder="LSB",
                         dataType=None, grimp=False, tiff=True,
-                        noDataValue=None, driverName='COG'):
+                        noDataValue=None, driverName='COG', geoTransform=None):
         '''
         Call routine to either write data as a tiff or flat binary file.
 
@@ -1477,10 +1505,12 @@ class nisarBaseHDF():
             self._writeTiffImageData(filename, data,
                                      dataType=None,
                                      noDataValue=noDataValue,
-                                     driverName=driverName)
+                                     driverName=driverName,
+                                     geoTransform=geoTransform)
 
     def _writeTiffImageData(self, filename, data, dataType=None,
-                            noDataValue=-2.e9, driverName='COG'):
+                            noDataValue=-2.e9, driverName='COG',
+                            geoTransform=None):
         '''
         Write data as a tiff  file.
 
@@ -1518,8 +1548,10 @@ class nisarBaseHDF():
         driver = gdal.GetDriverByName('MEM')
         nRows, nColumns = data.shape
         #
+        if geoTransform is None:
+            geoTransform = self.getGeoTransform(tiff=True)
         dst_ds = driver.Create('', nColumns, nRows, 1, gdalTypes[dataType])
-        dst_ds.SetGeoTransform(self.getGeoTransform(tiff=True))
+        dst_ds.SetGeoTransform(geoTransform)
         # set projection
         if self.coordType == 'GEO':
             sr = osr.SpatialReference()
@@ -1542,7 +1574,6 @@ class nisarBaseHDF():
         del(dst_ds)
         del(dst_ds2)
         gc.collect()
-
 
     def _writeBinaryImageData(self, filename, data, dataType=None,
                               byteOrder="LSB", noDataValue=-2.e9, grimp=False):
@@ -2202,6 +2233,58 @@ class nisarBaseHDF():
         '''
         t = self.SMLocateZDECEF(position, velocity, slantRange, z)
         return self.ECEFtoLL(*list(t))
+
+    def downsample(self, arr, factor):
+        '''
+        Downsample arr by factor, which will be forced to be integere
+
+        Parameters
+        ----------
+        arr : np.array
+            array to downsample.
+        factor : int
+            Downsample factor.
+
+        Returns
+        -------
+        np.array
+            Downsampled array.
+
+        '''
+        m, n = arr.shape
+        print(m, n)
+        mNew, nNew = m // factor, n // factor
+        print(mNew, nNew)
+        return arr[:mNew*factor,
+                   :nNew*factor].reshape(mNew,
+                                         factor,
+                                         nNew,
+                                         factor).mean(axis=(1, 3))
+
+    def rescale_geoTransform(self, gt, factor):
+        """
+        Modify a GDAL GeoTransform after downsampling by an integer factor.
+
+        Parameters
+        ----------
+        gt : tuple or list
+            Original geotransform (6 elements)
+        factor : int
+            Downsampling factor
+        Returns
+        -------
+        tuple
+            Updated geotransform
+        """
+        gt0, gt1, gt2, gt3, gt4, gt5 = gt
+        return (
+            gt0,           # origin x stays the same
+            gt1 * factor,  # pixel width increases
+            gt2,           # rotation unchanged
+            gt3,           # origin y stays the same
+            gt4,           # rotation unchanged
+            gt5 * factor   # pixel height increases (still neg. for north-up)
+        )
 
     def _computeLookError(self, elook, ph, pv, position, slantRange,
                           ReMajorZ2, ReMinorZ2):

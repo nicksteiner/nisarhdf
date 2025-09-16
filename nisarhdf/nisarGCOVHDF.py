@@ -5,7 +5,7 @@ Created on Thu Nov 14 08:51:41 2024
 
 @author: ian
 """
-
+import numpy as np
 from nisarhdf import nisarBaseGeocodedHDF
 
 
@@ -50,7 +50,8 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
         self.lookType = None
 
-    def parseParams(self, secondary=False, noLoadData=False, **keywords):
+    def parseParams(self, secondary=False, noLoadData=False, sigma0=False,
+                    dB=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -60,7 +61,7 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
 
         '''
         print(self.layer)
-        self.getOrbitAndFrame(**keywords)
+        self.getOrbitAndFrame(**keywords)     
         self.getNumberOfLooks()
         self.getLookDirection()
         self.getOrbitPassDirection()
@@ -69,7 +70,6 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         self.getWavelength()
         self.getGranuleNames()
         self.getEPSG()
-
         self.getSLCSlantRange()
         self.getSLCZeroDopplerTime()
         self.effectivePRF()
@@ -79,4 +79,53 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
                       'listOfCovarianceTerms']]
         #
         fields += ['mask', 'numberOfLooks', 'rtcGammaToSigmaFactor']
+        self.fields = fields
+        self.dB = dB
+        self.backscatterType = 'gamma0'
+        print(fields)
         self.loadData(fields, noLoadData=noLoadData)
+        self.sigma0 = self.sigma0
+        self.dB = dB
+        if sigma0:
+            self.computeSigma()
+        if self.dB:
+            self.computedB()
+
+    def computeSigma(self):
+        '''
+        Convert data from gamma to sigma
+        Returns
+        -------
+        None.
+
+        '''
+        print('Converting to sigma0')
+        rtcConversion = getattr(self, 'rtcGammaToSigmaFactor')
+        if rtcConversion is None:
+            print('Warning: No rtcGammaToSigmaFactor to do conversion')
+        self.backscatterType = 'sigma0'
+        for field in self.dataFields:
+            if field in ['HHHH', 'VVVV', 'HHVV', 'VVHH']:
+                setattr(self, field, self._computeSigma(getattr(self, field),
+                                                        rtcConversion))
+
+    def _computeSigma(self, data, rtcConversion):
+        return rtcConversion * data
+
+    def computedB(self):
+        '''
+        Convert data from gamma to sigma
+        Returns
+        -------
+        None.
+
+        '''
+        print('Converting to dB')
+        for field in self.dataFields:
+            if field in ['HHHH', 'VVVV', 'HHVV', 'VVHH']:
+                setattr(self, field, self._computedB(getattr(self, field)))
+                
+    def _computedB(self, data):
+        return 10.0 * np.log10(data)
+
+ 

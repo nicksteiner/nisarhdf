@@ -113,12 +113,14 @@ class nisarOrbit():
         t0 = newSVInterval * np.round(
             (self.firstZeroDopplerTime - pad * newSVInterval)/newSVInterval,
             decimals=0)
-
+        # Avoid extending outside range of the originals
+        t0 = max(t0, self.time[0])
         t1 = newSVInterval * np.round(
             (self.lastZeroDopplerTime + pad * newSVInterval)/newSVInterval,
             decimals=0)
+        # Avoid extending outside range of the originals
+        t1 = min(t1, self.time[-1])
         # Compute state vector time
-
         self.time = np.arange(t0, t1 + newSVInterval, newSVInterval)
         self.position = np.transpose(
             [self.xsv(self.time), self.ysv(self.time), self.zsv(self.time)]
@@ -142,7 +144,6 @@ class nisarOrbit():
 
         '''
         #
-        # Create interpolationrs pos and vel for state vectors
         for i, pos, vel in zip(range(0, 3),
                                ['xsv', 'ysv', 'zsv'],
                                ['vxsv', 'vysv', 'vzsv']):
@@ -263,13 +264,11 @@ class nisarOrbit():
             referenceDate = sv['utc'][0].replace(hour=0, minute=0,
                                                  second=0, microsecond=0)
         #
-        print('first', sv['utc'][0])
         self.NumberOfStateVectors = len(sv['utc'])
         self.TimeOfFirstStateVector = (sv['utc'][0] -
                                        referenceDate).total_seconds()
         self.StateVectorInterval = (sv['utc'][1] -
                                     sv['utc'][0]).total_seconds()
-        print(self.TimeOfFirstStateVector, self.StateVectorInterval)
         #
         # Get position and velocity
         endTime = self.TimeOfFirstStateVector + \
