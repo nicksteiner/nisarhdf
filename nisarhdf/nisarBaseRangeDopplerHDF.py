@@ -79,7 +79,14 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
                          self.slantRangeData[-1] + 0.5 * da,
                          self.zeroDopplerTimeData[0] + 0.5 * da,
                          self.zeroDopplerTimeData[-1] - 0.5 * da]
-        
+
+    def getPolarizations(self):
+        '''
+        Parse the list of polarizations
+        '''
+        swaths = self.h5[self.product]['swaths']
+        self.polarizations = [x.decode("utf-8") for x in 
+            swaths[self.frequency]['listOfPolarizations']]       
         
     # def getSlantRangeData(self):
     #     ''' Get slant range data '''
@@ -324,7 +331,7 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
 
         '''
         midZeroTime = getattr(self, f'{self.lookType}MidZeroDopplerTime')
-        print(self.getSatelliteHeight([midZeroTime]))
+        # print(self.getSatelliteHeight([midZeroTime]))
         self.SpaceCraftAltitude = self.getSatelliteHeight([midZeroTime])[0]
 
     def getCenterIncidenceAngle(self):
@@ -425,6 +432,9 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
                                    [self.MLMidZeroDopplerTime],
                                    [0])
         self.CenterLatLon = [lat[0], lon[0]]
+        # for compatability with geocoded
+        self.centerLat = lat[0]
+        self.centerLon = lon[0]
 
     def getGeoTransform(self, tiff=True, grimp=True):
         '''

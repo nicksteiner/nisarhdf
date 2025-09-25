@@ -18,8 +18,9 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
     This class creates objects to work with nisar RUNWHDF images.
     '''
 
-    def __init__(self,  sar='LSAR', frequency='frequencyA', polarization='HH',
-                 layer='layer1', byteOrder='LSB'):
+    def __init__(self, sar='LSAR',
+                 frequency='frequencyA', polarization=None,
+                 layer='layer1', byteOrder='LSB', productType='pixelOffsets'):
         '''
         NISAR ROFF HDF Reader
 
@@ -43,18 +44,22 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
                                           sar=sar,
                                           product='ROFF',
                                           frequency=frequency,
-                                          productType='pixelOffsets',
-                                          polarization=polarization,
+                                          productType=productType,
+                                          polarization=None,
                                           layer=layer,
                                           productData='alongTrackOffset',
                                           bands='swaths',
                                           bytOrder=byteOrder)
         self.lookType = 'Offset'
+        self.isSecondary = False
         self.productParams = ['r0', 'a0', 'deltaR', 'deltaA']
         for param in self.RDParams:
             self.productParams.append(f'{self.lookType}{param}')
 
-    def parseParams(self, secondGeodat=None, noLoadData=False, **keywords):
+    def parseParams(self, productType='pixelOffsets', polarization=None,
+                    layers=['layer1', 'layer2', 'layer3'],
+                    fields=None, secondGeodat=None, noLoadData=False,
+                    **keywords):
         '''
         Parse all the params needed for offsets
 
@@ -63,7 +68,7 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
         None.
 
         '''
-        self.isSecondary = False
+        self.getPolarization(polarization)
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
         self.getOrbitPassDirection()
@@ -82,7 +87,6 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
         self.getGranuleNames()
         self.SLCSceneCenterAlongTrackSpacing()
         self.getExtent()
-
         self.fieldDict = {'pixelOffsets': ['slantRangeOffset', 
                                            'slantRangeOffsetVariance',
                                            'alongTrackOffset',
@@ -90,17 +94,30 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
                                            'crossOffsetVariance',
                                            'correlationSurfacePeak',
                                            'snr']}
-        # Load data
-        self.getLayers(self.fieldDict['pixelOffsets'], noLoadData=noLoadData)
-        self.loadData(['digitalElevationModel'], noLoadData=noLoadData,
-                      resetFields=False)
         #
+        # This mess is to handle both layers and things that are not layers
+        # So far this is just the DEM
+        singleFields = []
+        if fields is None:
+            layerFields = self.fieldDict['pixelOffsets'] 
+            fields = layerFields + ['digitalElevationModel']
+            singleFields = ['digitalElevationModel']
+        else:
+            layerFields = [x for x in fields if x not in ['digitalElevationModel']]
+            singleFields = [x for x in fields if x in ['digitalElevationModel']]
+        
+        # Load data
+        self.getLayers(layerFields, layers=layers, noLoadData=noLoadData)
+        self.loadData(singleFields, noLoadData=noLoadData,
+                      resetFields=False)
+        # scale factors to convert back to pixels
         self.scaleFactors = {'slantRangeOffset': 1./self.SLCRangePixelSize,
                              'alongTrackOffset': 1./self.SLCAzimuthPixelSize,
                              'slantRangeOffsetVariance':
                                  (1./self.SLCRangePixelSize)**2,
                              'alongTrackOffsetVariance':
                                  (1./self.SLCAzimuthPixelSize)**2}
+        # Suffixes for outputs
         self.suffixes = {'slantRangeOffset': '.dr',
                          'slantRangeOffsetVariance': '.vr',
                          'alongTrackOffset': '.da',

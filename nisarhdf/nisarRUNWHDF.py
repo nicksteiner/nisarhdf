@@ -17,7 +17,8 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
     '''
 
     def __init__(self,  sar='LSAR', frequency='frequencyA',
-                 polarization='HH', isSecondary=False,
+                 polarization=None, isSecondary=False, 
+                 productType='interferogram',
                  referenceOrbitXML=None, secondaryOrbitXML=None, debug=False):
         '''
        sar : str, optional
@@ -43,7 +44,7 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
                                           sar=sar,
                                           product='RUNW',
                                           frequency=frequency,
-                                          productType='interferogram',
+                                          productType=productType,
                                           polarization=polarization,
                                           layer=None,
                                           productData='unwrappedPhase',
@@ -57,7 +58,9 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         for param in self.RDParams:
             self.productParams.append(f'{self.lookType}{param}')
 
-    def parseParams(self, secondary=False, noLoadData=False, **keywords):
+    def parseParams(self, fields=None, productType='interferogram', 
+                    polarization=None, secondary=False, 
+                    noLoadData=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -66,11 +69,13 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         None.
 
         '''
+        if not secondary:
+            self.getPolarization(polarization)
         self.getGranuleNames()
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
         self.parseRefDate()
-        self.getNumberOfLooks()
+        self.getNumberOfLooks(prodType='interferogram')
         self.getSLCSlantRange()
         self.getSLCZeroDopplerTime(secondary=secondary)
         self.getMLSize()
@@ -118,9 +123,13 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
                                decimals=3)
             self.secondary.referenceOrbit = self.secondaryOrbit
             self.secondary.frame = self.frame
-        self.genGeodatProperties()
-        fields = ['coherenceMagnitude', 'connectedComponents',
-                  'ionospherePhaseScreen', 'ionospherePhaseScreenUncertainty',
-                  'unwrappedPhase', 'digitalElevationModel']
-        self.loadData(fields, noLoadData=noLoadData)
+            self.genGeodatProperties()
+            if fields is None:
+                fields = ['coherenceMagnitude',
+                          'connectedComponents',
+                          'ionospherePhaseScreen',
+                          'ionospherePhaseScreenUncertainty',
+                          'unwrappedPhase',
+                          'digitalElevationModel']
+            self.loadData(fields, noLoadData=noLoadData)
 

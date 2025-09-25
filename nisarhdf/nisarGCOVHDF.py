@@ -47,11 +47,13 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
                                       isSecondary=isSecondary,
                                       referenceOrbitXML=referenceOrbitXML,
                                       secondaryOrbitXML=secondaryOrbitXML)
+        self.productType = None
         self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
         self.lookType = None
 
     def parseParams(self, secondary=False, noLoadData=False, sigma0=False,
-                    dB=False, **keywords):
+                    dB=False, fields=None, productType=None,
+                    **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -60,7 +62,8 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         None.
 
         '''
-        print(self.layer)
+        #
+        self.polarization = None
         self.getOrbitAndFrame(**keywords)     
         self.getNumberOfLooks()
         self.getLookDirection()
@@ -74,21 +77,39 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         self.getSLCZeroDopplerTime()
         self.effectivePRF()
         self.getExtent()
-        fields = [self.parseString(x) for x in
-                  self.h5[self.product][self.bands][self.frequency][
-                      'listOfCovarianceTerms']]
+        self.covTerms = [self.parseString(x) for x in
+                         self.h5[self.product][self.bands][self.frequency][
+                        'listOfCovarianceTerms']]
         #
-        fields += ['mask', 'numberOfLooks', 'rtcGammaToSigmaFactor']
+        # Default to all fields
+        if fields is None:
+            fields = self.covTerms + \
+                ['mask', 'numberOfLooks', 'rtcGammaToSigmaFactor']
+        #
+        # Remove polarizations that were requested but not available 
+        new_fields = []
+        missing = []
+        for field in fields:
+            if field in ['HHHH', 'VVVV', 'HVHV', 'VHVH'] and field not in self.covTerms:
+               missing.append(field)
+            else:
+                new_fields.append(field)
+        #if len(missing) > 0:
+        #     print(f'\033[1mPolarization(s) not in current file\033[0m\n {missing}')
+        fields = new_fields
+        #
         self.fields = fields
         self.dB = dB
         self.backscatterType = 'gamma0'
-        print(fields)
         self.loadData(fields, noLoadData=noLoadData)
+        #dfds  = adf
         self.sigma0 = self.sigma0
         self.dB = dB
-        if sigma0:
+        if sigma0 and not noLoadData:
+            print('computing sigma0')
             self.computeSigma()
-        if self.dB:
+        if self.dB and not noLoadData:
+            print('computing DB')
             self.computedB()
 
     def computeSigma(self):
@@ -99,7 +120,6 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         None.
 
         '''
-        print('Converting to sigma0')
         rtcConversion = getattr(self, 'rtcGammaToSigmaFactor')
         if rtcConversion is None:
             print('Warning: No rtcGammaToSigmaFactor to do conversion')
@@ -120,7 +140,6 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         None.
 
         '''
-        print('Converting to dB')
         for field in self.dataFields:
             if field in ['HHHH', 'VVVV', 'HHVV', 'VVHH']:
                 setattr(self, field, self._computedB(getattr(self, field)))

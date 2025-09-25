@@ -14,7 +14,7 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
     '''
 
     def __init__(self,  sar='LSAR', product='GOFF', frequency='frequencyA',
-                 productType='pixelOffsets', polarization='HH',
+                 productType='pixelOffsets', polarization=None,
                  layer='layer1', productData='alongTrackOffset', bands='grids',
                  referenceOrbitXML=None, secondaryOrbitXML=None,
                  isSecondary=False):
@@ -46,10 +46,13 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
                                       isSecondary=isSecondary,
                                       referenceOrbitXML=referenceOrbitXML,
                                       secondaryOrbitXML=secondaryOrbitXML)
+        self.productType = productType
         self.productParams = ['xSize', 'ySize', 'dx', 'dy']
         self.lookType = None
 
-    def parseParams(self, secondary=False, noLoadData=False, **keywords):
+    def parseParams(self, fields=None,  productType='pixelOffsets',
+                    layers=['layer1', 'layer2', 'layer3'], polarization=None,
+                    secondary=False, noLoadData=False, **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -58,13 +61,14 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
         None.
 
         '''
+        self.getPolarization(polarization)
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
         self.getOrbitPassDirection()
         self.parseRefDate()
         self.getGeoCoordinates()
         self.getWavelength()
-        self.getOffsetWindowParams()
+        self.getOffsetWindowParams(layers=layers)
         self.getGranuleNames()
         self.getEPSG()
         self.getSLCSlantRange()
@@ -78,8 +82,13 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
                                            'crossOffsetVariance',
                                            'correlationSurfacePeak',
                                            'snr']}
+        # Setup fields
+        if fields is None:
+            layerFields = self.fieldDict['pixelOffsets'] 
+        else:
+            layerFields = [x for x in fields if x not in ['digitalElevationModel']]
         #
-        self.getLayers(self.fieldDict['pixelOffsets'], noLoadData=noLoadData)
+        self.getLayers(layerFields, layers=layers, noLoadData=noLoadData)
         #
         self.scaleFactors = {'slantRangeOffset': 1./self.SLCRangePixelSize,
                              'alongTrackOffset': 1./self.SLCAzimuthPixelSize,

@@ -9,8 +9,8 @@ Created on Wed Nov 20 14:00:22 2024
 from nisarhdf.nisarBaseRangeDopplerHDF import nisarBaseRangeDopplerHDF
 import os
 import numpy as np
-
 from nisarhdf import writeMultiBandVrt, formatGeojson
+
 
 class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
     '''
@@ -18,7 +18,8 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
     '''
 
     def __init__(self,  sar='LSAR', frequency='frequencyA',
-                 polarization='HH', isSecondary=False,
+                 polarization=None, isSecondary=False,
+                 productType='interferogram',
                  referenceOrbitXML=None, secondaryOrbitXML=None, debug=False):
         '''
        sar : str, optional
@@ -26,7 +27,7 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
         frequency : str, optional
             frequency band to extract. The default is 'frequencyA'.
         polarization : str, optional
-            Polarization. The default is 'HH'.
+            Polarization. The default is None, which gives the first like pol.
         isSecondary : Boolean, optional
             For internal use only. The default is False.
         referenceOrbitXML : str, optional
@@ -44,10 +45,9 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
                                           sar=sar,
                                           product='RIFG',
                                           frequency=frequency,
-                                          productType='interferogram',
+                                          productType=productType,
                                           polarization=polarization,
                                           layer=None,
-                                          productData='unwrappedPhase',
                                           bands='swaths',
                                           isSecondary=isSecondary,
                                           referenceOrbitXML=referenceOrbitXML,
@@ -58,7 +58,9 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
         for param in self.RDParams:
             self.productParams.append(f'{self.lookType}{param}')
 
-    def parseParams(self, secondary=False, noLoadData=False, **keywords):
+    def parseParams(self,  productType='interferogram', fields=None,
+                    secondary=False, noLoadData=False, polarization=None,
+                    **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -67,11 +69,13 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
         None.
 
         '''
+        if not secondary:
+            self.getPolarization(polarization)
         self.getGranuleNames()
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
         self.parseRefDate()
-        self.getNumberOfLooks()
+        self.getNumberOfLooks(prodType='interferogram')
         self.getSLCSlantRange()
         self.getSLCZeroDopplerTime(secondary=secondary)
         self.getMLSize()
@@ -104,7 +108,6 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
         #self.getSingleLookPixelSize()
         self.getExtent()
         #
-        
         #
         # If not secondary, create the secondary and parse
         if not secondary:
@@ -121,7 +124,9 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
                                decimals=3)
             self.secondary.referenceOrbit = self.secondaryOrbit
             self.secondary.frame = self.frame
-        self.genGeodatProperties()
-        fields = ['coherenceMagnitude', 'wrappedInterferogram']
-        self.loadData(fields, noLoadData=noLoadData)
+            self.genGeodatProperties()
+            if fields is None:
+                fields = ['slantRangeOffset', 'alongTrackOffset',
+                          'digitalElevationModel']
+            self.loadData(fields, noLoadData=noLoadData)
 

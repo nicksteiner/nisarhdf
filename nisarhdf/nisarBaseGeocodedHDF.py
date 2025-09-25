@@ -10,7 +10,7 @@ Created on Fri Nov  1 08:44:36 2024
 import scipy
 import numpy as np
 from nisarhdf.nisarBaseHDF import nisarBaseHDF
-
+import pyproj
 
 class nisarBaseGeocodedHDF(nisarBaseHDF):
     '''
@@ -52,6 +52,13 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
         '''
         self.epsg = self.toScalar(
             self.h5[self.product]['metadata'][self.gridType]['projection'])
+        
+    def getPolarizations(self):
+        '''
+        Parse the list of polarizations
+        '''
+        self.polarizations = [x.decode("utf-8") for x in 
+            self.h5[self.product]['grids'][self.frequency]['listOfPolarizations']]
 
 #
 # Interpolation/Data Cube routines
@@ -263,6 +270,12 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
         self.geodat = [[self.xSize, self.ySize],
                        [np.abs(self.dx), np.abs(self.dy)],
                        [self.x0/1000, self.y0/1000.]]
+        #
+        self.xytoll = pyproj.Transformer.from_crs(f"EPSG:{self.epsg}",
+                                                  "EPSG:4326").transform
+        self.centerLat, self.centerLon = self.xytoll(
+            self.x0 + 0.5 * self.dx * self.xSize,
+            self.y0 + 0.5 * self.dy * self.ySize)
 
     def writeGeodat(self, filename):
         '''

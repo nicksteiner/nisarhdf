@@ -64,6 +64,9 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
 
         # self.getOffsetParams()
         # self.getNumberOfLooks()
+        if 'polarization' not in keywords:
+            polarization = None
+        self.getPolarization(polarization)
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
         self.getOrbitPassDirection()

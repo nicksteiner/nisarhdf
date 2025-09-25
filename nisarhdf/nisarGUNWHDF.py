@@ -15,7 +15,7 @@ class nisarGUNWHDF(nisarBaseGeocodedHDF):
     '''
 
     def __init__(self,  sar='LSAR', product='GUNW', frequency='frequencyA',
-                 productType='unwrappedInterferogram', polarization='HH',
+                 productType='unwrappedInterferogram', polarization=None,
                  layer=None, productData='unwrappedPhase', bands='grids',
                  referenceOrbitXML=None, secondaryOrbitXML=None,
                  isSecondary=False):
@@ -47,10 +47,13 @@ class nisarGUNWHDF(nisarBaseGeocodedHDF):
                                       isSecondary=isSecondary,
                                       referenceOrbitXML=referenceOrbitXML,
                                       secondaryOrbitXML=secondaryOrbitXML)
+        self.productType = productType
         self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
         self.lookType = None
 
-    def parseParams(self, secondary=False, noLoadData=False, **keywords):
+    def parseParams(self, fields=None, secondary=False, noLoadData=False,
+                    productType='unwrappedInterferogram', polarization=None,
+                    **keywords):
         '''
         Parse all the params needed to make a geodatNRxNA.geojson file
 
@@ -59,6 +62,10 @@ class nisarGUNWHDF(nisarBaseGeocodedHDF):
         None.
 
         '''
+        self.productType = productType
+        if not secondary:
+            self.getPolarization(polarization)
+        #
         self.getOrbitAndFrame(**keywords)
         self.getNumberOfLooks()
         self.getLookDirection()
@@ -83,4 +90,6 @@ class nisarGUNWHDF(nisarBaseGeocodedHDF):
                      'wrappedInterferogram':
                      ['coherenceMagnitude',
                       'wrappedInterferogram']}
-        self.loadData(fieldDict[self.productType], noLoadData=noLoadData)
+        if fields is None:
+            fields = fieldDict[self.productType]
+        self.loadData(fields, noLoadData=noLoadData)
