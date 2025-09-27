@@ -80,6 +80,7 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         self.covTerms = [self.parseString(x) for x in
                          self.h5[self.product][self.bands][self.frequency][
                         'listOfCovarianceTerms']]
+        self.units = 'power'
         #
         # Default to all fields
         if fields is None:
@@ -102,10 +103,11 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         self.dB = dB
         self.backscatterType = 'gamma0'
         self.loadData(fields, noLoadData=noLoadData)
-        #dfds  = adf
-        self.sigma0 = self.sigma0
+        #
         self.dB = dB
         if sigma0 and not noLoadData:
+            if not hasattr(self, 'rtcGammaToSigmaFactor'):
+                self.getImageData('rtcGammaToSigmaFactor', useNumpy=True)
             print('computing sigma0')
             self.computeSigma()
         if self.dB and not noLoadData:
@@ -123,11 +125,14 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         rtcConversion = getattr(self, 'rtcGammaToSigmaFactor')
         if rtcConversion is None:
             print('Warning: No rtcGammaToSigmaFactor to do conversion')
-        self.backscatterType = 'sigma0'
+        # check it has been converted already
+        if self.backscatterType == 'sigma0':
+            return 
         for field in self.dataFields:
             if field in ['HHHH', 'VVVV', 'HHVV', 'VVHH']:
                 setattr(self, field, self._computeSigma(getattr(self, field),
                                                         rtcConversion))
+        self.backscatterType = 'sigma0'
 
     def _computeSigma(self, data, rtcConversion):
         return rtcConversion * data
@@ -140,9 +145,12 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         None.
 
         '''
+        if self.units == 'dB':
+            return
         for field in self.dataFields:
             if field in ['HHHH', 'VVVV', 'HHVV', 'VVHH']:
                 setattr(self, field, self._computedB(getattr(self, field)))
+        self.units = 'dB'
                 
     def _computedB(self, data):
         return 10.0 * np.log10(data)

@@ -17,11 +17,13 @@ import geopandas as gpd
 import rasterio
 from datetime import datetime
 from nisarhdf.writeMultiBandVrt import writeMultiBandVrt
+from nisarhdf.nisarhdfPlottingTools import autoScaleRange
 import gc
 # import s3fs
 import boto3
 import requests
 import io
+import matplotlib.colors as mcolors
 
 gdal.UseExceptions()
 
@@ -539,7 +541,7 @@ class nisarBaseHDF():
             print("[INFO] File downloaded into memory, opening with h5py...")
 
         return h5py.File(self.memory_file, "r")
-
+       
     def _openS3(self, s3link, page_buf_size=2 * 1024**3):
         '''
         Open s3 link using ros3. Leaving to document, but switching to
@@ -551,6 +553,7 @@ class nisarBaseHDF():
         page_buf_size: int
             page buf size. The default is 2 * 1024**3.
         '''
+        print(f'page_buf_size {page_buf_size/1e6} MB')
         # *** Update one s3 2k token issue fixed ***
         if self.s3cred is None:
             self._getS3cred()
@@ -569,7 +572,7 @@ class nisarBaseHDF():
 
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
                 referenceOrbit=None, secondaryOrbit=None, noLoadData=False,
-                closeH5=False, page_buf_size=2*1024**3,
+                closeH5=False, page_buf_size=10*1024**3,
                 useRos3=False, fields=None,
                 **keywords):
         '''
@@ -615,11 +618,11 @@ class nisarBaseHDF():
         try:
             if 's3' in hdfFile:
                 if useRos3:
-                    self.h5Full = self._openS3(hdfFile)
+                    self.h5Full = self._openS3(hdfFile, page_buf_size=page_buf_size)
                 else:
                     self.h5Full = self._openS3InMemory(hdfFile)
             elif 'https' in hdfFile:
-                self.h5Full = self._openHTTPInMemory(hdfFile)
+                self.h5Full = self._openHTTPInMemory(hdfFile, verbose=False)
             else:
                 if not os.path.exists(hdfFile):
                     self.printError(f'{hdfFile} does not exist')
@@ -1213,7 +1216,8 @@ class nisarBaseHDF():
                   scaleToPixels=False,  geojsonName=None,
                   geojsonNameSecondary=None,
                   noSuffix=False, driverName='COG',
-                  downsampleFactor=1, dB=False, sigma0=False):
+                  quickLook=False,
+                  downsampleFactor=1, sigma0=False):
         '''
         Write data to binary or tiff file for all data types. Non offset
         results are saved as individual files (filenameRoot.band[.tif] which
@@ -1270,6 +1274,8 @@ class nisarBaseHDF():
         driverName : str, optional
             Gdal driver name if writing to tiff. COG or GTiff. The default
             is 'COG'
+       quickLook : bool, optional
+            write a quickLook png for some image types.            
         Returns
         -------
         None.
@@ -1301,7 +1307,8 @@ class nisarBaseHDF():
                                      byteOrder=byteOrder,
                                      noSuffix=noSuffix,
                                      driverName=driverName,
-                                     downsampleFactor=downsampleFactor, dB=dB)
+                                     quickLook=quickLook,
+                                     downsampleFactor=downsampleFactor)
         else:
             if 'digitalElevationModel' in bands:
                 self._writeNonOffsetData(filenameRoot,
@@ -1311,6 +1318,7 @@ class nisarBaseHDF():
                                          byteOrder=byteOrder,
                                          noSuffix=noSuffix,
                                          driverName=driverName,
+                                         quickLook=False,
                                          downsampleFactor=downsampleFactor)
             self._writeOffsets(filenameRoot,
                                bands=bands,
@@ -1472,8 +1480,8 @@ class nisarBaseHDF():
 
     def _writeNonOffsetData(self, filenameRoot, bands=None, tiff=True,
                             byteOrder='LSB', grimp=False, noSuffix=False,
-                            driverName='COG', downsampleFactor=1,
-                            dB=False, sigma0=False):
+                            driverName='COG', downsampleFactor=1, quickLook=False,
+                            sigma0=False):
         '''
         Write non-offset data to binary or tiff file.
 
@@ -1493,6 +1501,8 @@ class nisarBaseHDF():
         grimp : bool, optional
             For GrIMP compatability, force binary files with geocoded data to
             use a lower-left corner geotransform. The default is False.
+        quickLook : bool, optional
+            Write a quick look png. Overrides tiff flag
         driverName : str, optional
             Gdal driver name if writing to tiff. COG or GTiff. The default
             is 'COG'
@@ -1501,13 +1511,15 @@ class nisarBaseHDF():
         None.
 
         '''
-        #Propagate dB, and sigma0. Test. move helpers from gcove if needed.
         #
         if tiff and byteOrder != 'LSB':
             self.printError(f'Byte order {byteOrder} not supported for tiffs')
             return
         # Add '.tif' suffix to diff files
-        suffix = {True: '.tif', False: ''}[tiff]
+        if not quickLook:
+            suffix = {True: '.tif', False: ''}[tiff]
+        else:
+            suffix = '.png'
         # Default to all fields as bands
         if bands is None:
             bands = self.dataFields
@@ -1537,12 +1549,14 @@ class nisarBaseHDF():
             # Write the data to a binary or tiff file.
             self._writeImageData(filename, data,
                                  tiff=tiff,
+                                 quickLook=quickLook,
                                  noDataValue=noDataValue,
                                  dataType=str(data.dtype),
                                  byteOrder=byteOrder,
                                  grimp=grimp,
                                  driverName=driverName,
-                                 geoTransform=geoTransform)
+                                 geoTransform=geoTransform,
+                                 band=band)
         # Write a vrt
         sy, sx = data.shape
         writeMultiBandVrt(f'{filenameRoot}.vrt',
@@ -1555,8 +1569,9 @@ class nisarBaseHDF():
                           byteOrder=byteOrder, tiff=tiff, epsg=self.epsg)
 
     def _writeImageData(self, filename, data,  byteOrder="LSB",
-                        dataType=None, grimp=False, tiff=True,
-                        noDataValue=None, driverName='COG', geoTransform=None):
+                        dataType=None, grimp=False, tiff=True, quickLook=False,
+                        noDataValue=None, driverName='COG', geoTransform=None,
+                        band=None):
         '''
         Call routine to either write data as a tiff or flat binary file.
 
@@ -1584,7 +1599,7 @@ class nisarBaseHDF():
         None.
 
         '''
-        if not tiff:
+        if not tiff and not quickLook:
             self._writeBinaryImageData(filename, data,
                                        byteOrder=byteOrder,
                                        dataType=None,
@@ -1593,16 +1608,22 @@ class nisarBaseHDF():
             # This write geolocation info file for GrIMP workflows
             if grimp and self.coordType == 'GEO':
                 self.writeGeodat(f'{filename}.geodat')
-        else:
+        elif tiff and not quickLook:
             self._writeTiffImageData(filename, data,
                                      dataType=None,
                                      noDataValue=noDataValue,
                                      driverName=driverName,
                                      geoTransform=geoTransform)
+        elif quickLook:
+            self._writePNG(filename,
+                           data,
+                           band=band)
+        else:
+            print('invalid image format')
 
     def _writeTiffImageData(self, filename, data, dataType=None,
                             noDataValue=-2.e9, driverName='COG',
-                            geoTransform=None):
+                            geoTransform=None, **keywords):
         '''
         Write data as a tiff  file.
 
@@ -1668,7 +1689,7 @@ class nisarBaseHDF():
         gc.collect()
 
     def _writeBinaryImageData(self, filename, data, dataType=None,
-                              byteOrder="LSB", noDataValue=-2.e9, grimp=False):
+                              byteOrder="LSB", noDataValue=-2.e9, grimp=False, **keywords):
         '''
         write data as a flat binary image with specfied data type.
 
@@ -1714,9 +1735,99 @@ class nisarBaseHDF():
                 # Save data
                 x1.tofile(fpOut)
 
-    #
-    # Discard outliers, apply masks and corrections.
-    #
+    def _writePNG(self, filename, data, band=None):
+        '''
+        Save a numpy array as a PNG using GDAL.
+    
+        Parameters
+        ----------
+        filename : str
+            Output PNG filename.
+        data : np.ndarray
+            Input array (2D, float).
+        '''
+        if data.ndim != 2:
+            raise ValueError("Input array must be 2D")
+        # If complex use phase for image
+        if data.dtype == np.complex64:
+           self._writeComplexPNG(filename, data)
+        else:
+            self._writeScalarPNG(filename, data, band=band)
+ 
+    def _writeComplexPNG(self, filename, data):
+        '''
+        Helper for _writePNG to handle complex images.
+        
+        Parameters
+        ----------
+        filename : str
+            Output PNG filename.
+        data : np.ndarray
+            Input array (2D, float).
+        '''
+        # Create alpha channel for no data
+        alpha = np.full(data.shape, 255, dtype=np.uint8) 
+        alpha[np.isnan(data)] = 0
+        # hue from phase
+        phase = np.angle(data).astype(np.float32)
+        hue = (phase + np.pi) / (2 * np.pi)
+        # value from magnitude
+        mag = np.abs(data).astype(np.float32)
+        min_val, max_val = autoScaleRange(mag, 97)
+        mag = np.clip(mag, min_val, max_val)
+        value = mag/(max_val - min_val)
+        # create hsv -> rgb
+        hsv = np.stack((hue, np.ones_like(mag), value), axis=-1)
+        rgb = (mcolors.hsv_to_rgb(hsv) * 255).astype(np.uint8)
+        #
+        H, W, _ = rgb.shape
+        # PNG needs intermediate MEM driver
+        mem_driver = gdal.GetDriverByName("MEM")
+        mem_ds = mem_driver.Create("", W, H, 4, gdal.GDT_Byte)
+        for i in range(3):
+            mem_ds.GetRasterBand(i+1).WriteArray(rgb[:,:,i])
+        mem_ds.GetRasterBand(4).WriteArray(alpha)
+        # Now translate in-memory to PNG on disk
+        png_driver = gdal.GetDriverByName("PNG")
+        png_ds = png_driver.CreateCopy(filename, mem_ds)
+        png_ds.FlushCache()
+        png_ds = None
+        mem_ds = None
+
+    def _writeScalarPNG(self, filename, data, band=None):
+        '''
+        Write a scaler array as PNG.
+    
+        Parameters
+        ----------
+        filename : str
+            Output PNG filename.
+        data : np.ndarray
+            Input array (2D, float).
+        '''
+        arr = data.astype(np.float32)
+        # Build alpha channel: transparent for nodata, opaque otherwise
+        alpha = np.full(arr.shape, 255, dtype=np.uint8)
+        alpha[np.isnan(data)] = 0
+        # Scale based on band type
+        if band in ['coherenceMagnitude', 'HHHH', 'VVVV', 'HVHV', 'VHVH']:
+            min_val, max_val = autoScaleRange(arr, 97)
+        else:
+            min_val, max_val = autoScaleRange(arr, 100)
+        arr = np.clip(arr, min_val, max_val)
+        arr = 255 * (arr - min_val) / (max_val - min_val)
+        arr = arr.astype(np.uint8)
+        gdal_type = gdal.GDT_Byte
+        # Create an in-memory dataset
+        mem_driver = gdal.GetDriverByName("MEM")
+        mem_ds = mem_driver.Create("", arr.shape[1], arr.shape[0], 2, gdal_type)
+        mem_ds.GetRasterBand(1).WriteArray(arr)
+        mem_ds.GetRasterBand(2).WriteArray(alpha)
+        # Write to PNG using CreateCopy
+        png_driver = gdal.GetDriverByName("PNG")
+        png_driver.CreateCopy(filename, mem_ds, strict=0)
+        mem_ds = None
+        #print(f"Saved {filename} (type={gdal_type}, nodata={noDataValue})")
 
     def removeOutlierOffsets(self, filterField,
                              thresholds=[0.07, 0.05, 0.025],
@@ -2344,9 +2455,9 @@ class nisarBaseHDF():
 
         '''
         m, n = arr.shape
-        print(m, n)
+        # print(m, n)
         mNew, nNew = m // factor, n // factor
-        print(mNew, nNew)
+        # print(mNew, nNew)
         return arr[:mNew*factor,
                    :nNew*factor].reshape(mNew,
                                          factor,

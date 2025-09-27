@@ -9,6 +9,7 @@ import argparse
 import nisarhdf
 from datetime import datetime
 import sys
+import psutil
 
 productTypes = ['RSLC', 'ROFF', 'RIFG', 'RUNW', 'GCOV', 'GUNW', 'GOFF' ]
 
@@ -29,6 +30,10 @@ fieldsDict = {'ROFF': {'pixelOffsets': ['slantRangeOffset',
                                          'ionospherePhaseScreen',
                                          'ionospherePhaseScreenUncertainty',
                                          'digitalElevationModel']},
+              'RSLC': {None: ['HHHH', 
+                              'VVVV',
+                              'HVHV', 
+                              'VHVH']},
               'GCOV': {None: ['HHHH', 
                               'VVVV',
                               'HVHV', 
@@ -55,6 +60,7 @@ fieldsDict = {'ROFF': {'pixelOffsets': ['slantRangeOffset',
 productTypeDict = {'ROFF': ['pixelOffsets'],
                     'RIFG': ['interferogram'],
                     'RUNW': ['interferogram'],
+                    'RSLC': [None],
                     'GCOV':[None],
                     'GUNW': ['unwrappedInterferogram', 'wrappedInterferogram'],  
                     'GOFF': ['pixelOffsets']
@@ -73,6 +79,13 @@ defaultFieldsDict = {'RSLC': {None: ['HH', 'VV', 'HV', 'VH']},
                      
                     }
 
+quickLookDefaultDownsampleFactors = {'RSLC': 1,
+                                     'ROFF': 1, # not used
+                                     'RIFG': 8,
+                                     'RUNW': 2,
+                                     'GCOV': 8,
+                                     'GUNW': 2, 
+                                     'GOFF': 2} # not use
     
 def specialKeywords(myArgs, applicableProducts, specialArgs, args, 
                     default=False):
@@ -123,6 +136,10 @@ def parseCommandLine():
                         help='Root name for ouput (not required for --info)')
     parser.add_argument('--info', action="store_true",
                         help='Print summary info only')
+    parser.add_argument('--quickLook', action="store_true",
+                        help='Write a quick look PNG file (GCOV )')
+    #parser.add_argument('--ros3', action="store_true",
+    #                    help='Use ros3 for network (s3,https), slower, but more memory efficient')  
     parser.add_argument('--productFamily', type=str, default='',
                         help='NISAR product type (e.g., RUNW, GUNW etc) '
                         '[parse from product path]',
@@ -141,6 +158,9 @@ def parseCommandLine():
                         choices=['HH', 'VV', 'HV', 'VH'],
                         help='Polarization for \n\n\033[1mnon-GCOV\n\n\033[0m '
                         'products [first like pol]')
+    parser.add_argument('--downsampleFactor', type=int, default=None,
+                        choices=[2, 4, 8],
+                        help='Reduce resolution by 1/subsampleFactor (GCOV only) [full res]')
     parser.add_argument('--fields', type=str, default=[], nargs='+',                       
                         help='Select fields including GCOV covariance terms (e.g., '
                         'HHHH, HVHV), use all for everything. '
@@ -156,29 +176,71 @@ def parseCommandLine():
     #
     myArgs = {}
     #
+    if args.output is None and not args.info:
+        myerror('Unless --info set, specify an output file name')
     #
     myArgs['product'] = getProductType(args.productFamily, 
                                        args.productName)
+    #
     specialKeywords(myArgs, ['GCOV'], ['dB', 'sigma0'], args)
     specialKeywords(myArgs, ['ROFF', 'GOFF'], ['scaleToPixels'], args)
     specialKeywords(myArgs, ['GUNW'], ['wrapped'], args)
-    myArgs['hdfOpenKeywords'] = {}
-    if myArgs['product'] in ['GCOV']:
-        myArgs['hdfOpenKeywords']['dB'] = myArgs['dB']
-        myArgs['hdfOpenKeywords']['sigma0'] = myArgs['sigma0']
-        if args.polarization is not None:
-            print(f'\033[1m Ignoring --polarization {args.polarization}. Use '
-                  '--fields to specify covariance terms (e.g., --fields '
-                  f'{args.polarization}{args.polarization})\033[0m')
-    else:
-         myArgs['hdfOpenKeywords']['polarization'] = args.polarization
-        
-    if myArgs['product'] in ['GOFF', 'ROFF']:
-        myArgs['hdfOpenKeywords']['layers'] = [f'layer{x}' for x in args.layers]
+    #
+    processHDFOpenKeywords(args, myArgs)
     #
     myArgs['productType'] = productTypeDict[myArgs['product']][0]
     if myArgs['wrapped']:
         myArgs['productType'] = productTypeDict[myArgs['product']][1]
+    #
+    myArgs['fields'] = reconcileFields(args, myArgs)
+    #
+    # args that need no checking
+    for arg in ['productName', 'output', 'polarization',
+                'outputFormat', 'info', 'frequency',
+                'downsampleFactor', 'quickLook']:
+        myArgs[arg] = getattr(args, arg)
+    myArgs['ros3'] = True
+    #
+    if myArgs['quickLook'] and myArgs['product'] in ['ROFF', 'GOFF']:
+        print(f'quickLooks not supported for ROFF and GOFF')
+        myArgs['quickLook'] = False
+    elif myArgs['quickLook']:
+        if myArgs['downsampleFactor'] == 0:
+             myArgs['downsampleFactor'] = quickLookDefaultDownsampleFactors[myArgs['product']]
+             if myArgs['product'] in ['GUNW'] and myArgs['wrapped']:
+                 myArgs['downsampleFactor'] *= 4
+    if myArgs['downsampleFactor'] is None:
+        # If not set by one of the defaults, default to 1
+        myArgs['downsampleFactor'] = 1
+        
+    #
+    return myArgs
+
+def  processHDFOpenKeywords(args, myArgs):
+    '''
+    Process the set of keywords that are passed to the hdfOpen method
+    '''
+    myArgs['hdfOpenKeywords'] = {}
+    # keywords that only apply to GCOV
+    if myArgs['product'] in ['GCOV']:
+        myArgs['hdfOpenKeywords']['dB'] = myArgs['dB']
+        myArgs['hdfOpenKeywords']['sigma0'] = myArgs['sigma0']
+        if args.polarization is not None:
+            myerror('--polarization is not valid for GCOV. \n'
+                    'Polarization specified through fields (e.g --fields HHHH HVHV)')
+    else:
+        if myArgs['product'] not in ['RSLC']:
+            myArgs['hdfOpenKeywords']['polarization'] = args.polarization
+    #
+    # Only offset products have layers
+    if myArgs['product'] in ['GOFF', 'ROFF']:
+        myArgs['hdfOpenKeywords']['layers'] = [f'layer{x}' for x in args.layers]
+
+
+def reconcileFields(args, myArgs):
+    '''
+    Use defaults and command line options to produce final set of fields
+    '''
     #
     # Reconcile fields
     fields = args.fields
@@ -191,17 +253,8 @@ def parseCommandLine():
         for field in fields:
             if field not in fieldsDict[product][myArgs['productType']]:
                 myerror(f'{field} not in '
-                        f'{fieldsDict[product][myArgs["productType"]] }')
-    
-    #
-    myArgs['fields'] = fields
-    #
-    # args that need no checking
-    for arg in ['productName', 'output', 'polarization',
-                'outputFormat', 'info', 'frequency']:
-        myArgs[arg] = getattr(args, arg)
-    #
-    return myArgs
+                        f'{fieldsDict[product][myArgs["productType"]] }') 
+    return fields
 
 def printError(msg):
         '''
@@ -249,9 +302,10 @@ def outputData(myArgs, myProduct):
     keywords = {}
     if myArgs['productType'] in ['GOFF', 'ROFF']:
         keywords = {'scaleToPixels': myArgs['scaleToPixels']}
-    if myArgs['product'] in ['GCOV']: 
-        keywords = {'dB': myArgs['dB'], 'sigma0': myArgs['sigma0']}
+    #if myArgs['product'] in ['GCOV']: 
+     #   keywords = {'dB': myArgs['dB'], 'sigma0': myArgs['sigma0']}
         #print(keywords)
+    keywords['downsampleFactor'] = myArgs['downsampleFactor']
     #
     #for myArgs[]
     tiff, driverName = {'GTiff': [True, 'GTiff'],
@@ -260,6 +314,7 @@ def outputData(myArgs, myProduct):
     # write data 
     myProduct.writeData(myArgs['output'],
                         tiff=tiff,
+                        quickLook=myArgs['quickLook'],           
                         driverName=driverName, bands=None, **keywords)
     return
  
@@ -280,7 +335,7 @@ def printInfo(myArgs, myProduct):
     '''
     #
     # List defaults
-    if myArgs["product"] == 'GCOV':
+    if myArgs["product"] in ['GCOV']:
         print("\n\033[1mDefault polarization:\033[0m")
         for pol in myProduct.polarizations:
             print(pol, end=' ')
@@ -293,7 +348,9 @@ def printInfo(myArgs, myProduct):
                 print(f'{field}')
     else: 
         for productType in defaultFieldsDict[myArgs["product"]]:
-            print(f'\033[1m\nDefaults for {productType}: \033[0m', end='\n')
+            prodName = {True: myArgs["product"],
+                        False: myArgs["productType"]}[productType is None]
+            print(f'\033[1m\nDefaults for {prodName}: \033[0m', end='\n')
             for field in defaultFieldsDict[myArgs["product"]][productType]:
                 print(f'{field}')
             print(f'\033[1mAvailable fields for {productType}: \033[0m', end='\n')
@@ -303,11 +360,13 @@ def printInfo(myArgs, myProduct):
     #
     myProduct.printParams()
 
+
 def run():
     ''' 
     Main driver for program
     '''
     myArgs = parseCommandLine()
+    net_before = psutil.net_io_counters()
     # Debug
     if False:
         for key in myArgs:
@@ -324,6 +383,8 @@ def run():
                       productType=myArgs['productType'],
                       noLoadData=myArgs['info'],
                       fields=myArgs['fields'],
+                      useRos3=myArgs['ros3'],
+                      page_buf_size=1 * 1024**3,
                       **myArgs['hdfOpenKeywords']
                       )
     read = datetime.now()
@@ -338,7 +399,13 @@ def run():
     print('Load data', read-start)
     print('Write data', write-read)
     print('Total', write-start)
-
+    #
+    print('\n\033[1mNetwork traffic: \033[0m', end='\n')
+    net_after = psutil.net_io_counters()    
+    bytes_sent = net_after.bytes_sent - net_before.bytes_sent
+    bytes_recv = net_after.bytes_recv - net_before.bytes_recv
+    print(f"Bytes sent: {bytes_sent/1e6} MB")
+    print(f"Bytes received: {bytes_recv/1e6} MB")
 
 if __name__ == "__main__":
     run()
