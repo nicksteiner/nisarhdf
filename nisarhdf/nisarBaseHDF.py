@@ -310,7 +310,7 @@ class nisarBaseHDF():
             endString = '\n'
         print("\n\033[1mData Fields\033[0m", end=endString)
         polString = ''
-        if self.polarization is not None:
+        if self.polarization is not None and self.product not in ['RSLC']:
             polString = f'{self.polarization}.'
         empty = False
         for field in self.dataFields:
@@ -573,7 +573,7 @@ class nisarBaseHDF():
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
                 referenceOrbit=None, secondaryOrbit=None, noLoadData=False,
                 closeH5=False, page_buf_size=10*1024**3,
-                useRos3=False, fields=None,
+                useRos3=False, fields=None, downsampleFactor=1,
                 **keywords):
         '''
         Open hdf and save self.h5Full and truncate to self.h5
@@ -605,7 +605,7 @@ class nisarBaseHDF():
 
         '''
         # Update XMLs
-
+        self.downsampleFactor = downsampleFactor
         for attr, value in zip(['referenceOrbitXML', 'secondaryOrbitXML'],
                                [referenceOrbitXML, secondaryOrbitXML]):
             if value is not None:
@@ -641,8 +641,7 @@ class nisarBaseHDF():
         self.parseParams(referenceOrbit=referenceOrbit,
                          secondaryOrbit=secondaryOrbit,
                          noLoadData=noLoadData, fields=fields,
-                         **keywords)
-        
+                         **keywords)   
         if closeH5:
             self.close()
 
@@ -1049,7 +1048,6 @@ class nisarBaseHDF():
             if productField not in ['digitalElevationModel']:
                 data = \
                     bands[self.frequency][self.productType][self.polarization]
-
             else:
                 # *** THIS IS FOR BACKWARDS COMPATABILITY, CAN BE REMOVED LATER
                 if not hasattr(self, 'digitalElevationModel'):
@@ -1065,11 +1063,17 @@ class nisarBaseHDF():
         # Apply layer if needed.
         if layer is not None:
             data = data[layer]
+        #
+     
         # set data value
         if useNumpy:
-            setattr(self, productField, np.array(data[productField]))
+            data = np.array(data[productField])  
         else:
-            setattr(self, productField, data.get(productField))
+            data = data.get(productField)
+        #    
+        if self.downsampleFactor > 1:
+            data = self.downsample(data, self.downsampleFactor)
+        setattr(self, productField, data)
 
     def getInterferogramPixelOffsets(self):
         '''
@@ -1217,7 +1221,7 @@ class nisarBaseHDF():
                   geojsonNameSecondary=None,
                   noSuffix=False, driverName='COG',
                   quickLook=False,
-                  downsampleFactor=1, sigma0=False):
+                  sigma0=False):
         '''
         Write data to binary or tiff file for all data types. Non offset
         results are saved as individual files (filenameRoot.band[.tif] which
@@ -1307,8 +1311,7 @@ class nisarBaseHDF():
                                      byteOrder=byteOrder,
                                      noSuffix=noSuffix,
                                      driverName=driverName,
-                                     quickLook=quickLook,
-                                     downsampleFactor=downsampleFactor)
+                                     quickLook=quickLook)
         else:
             if 'digitalElevationModel' in bands:
                 self._writeNonOffsetData(filenameRoot,
@@ -1318,8 +1321,7 @@ class nisarBaseHDF():
                                          byteOrder=byteOrder,
                                          noSuffix=noSuffix,
                                          driverName=driverName,
-                                         quickLook=False,
-                                         downsampleFactor=downsampleFactor)
+                                         quickLook=False)
             self._writeOffsets(filenameRoot,
                                bands=bands,
                                tiff=tiff,
@@ -1480,7 +1482,7 @@ class nisarBaseHDF():
 
     def _writeNonOffsetData(self, filenameRoot, bands=None, tiff=True,
                             byteOrder='LSB', grimp=False, noSuffix=False,
-                            driverName='COG', downsampleFactor=1, quickLook=False,
+                            driverName='COG', quickLook=False,
                             sigma0=False):
         '''
         Write non-offset data to binary or tiff file.
@@ -1535,10 +1537,7 @@ class nisarBaseHDF():
                         False: f'{filenameRoot}.{band}{suffix}'}[noSuffix]
             data = getattr(self, band)
             geoTransform = self.getGeoTransform(grimp=grimp, tiff=tiff)
-            if downsampleFactor > 1:
-                data = self.downsample(data, downsampleFactor)
-                geoTransform = self.rescale_geoTransform(geoTransform,
-                                                         downsampleFactor)
+      
             # Save bands nam, file, and data type
             descriptions.append(band)
             sourceFiles.append(filename)
@@ -1754,7 +1753,7 @@ class nisarBaseHDF():
         else:
             self._writeScalarPNG(filename, data, band=band)
  
-    def _writeComplexPNG(self, filename, data):
+    def _writeComplexPNG(self, filename, data, sqrt=True):
         '''
         Helper for _writePNG to handle complex images.
         
@@ -1770,11 +1769,15 @@ class nisarBaseHDF():
         alpha[np.isnan(data)] = 0
         # hue from phase
         phase = np.angle(data).astype(np.float32)
+        phase[np.isnan(phase)] = 0
         hue = (phase + np.pi) / (2 * np.pi)
         # value from magnitude
         mag = np.abs(data).astype(np.float32)
+        if sqrt:
+            mag = np.sqrt(mag)
         min_val, max_val = autoScaleRange(mag, 97)
         mag = np.clip(mag, min_val, max_val)
+        mag[np.isnan(mag)] = 0
         value = mag/(max_val - min_val)
         # create hsv -> rgb
         hsv = np.stack((hue, np.ones_like(mag), value), axis=-1)
@@ -1816,6 +1819,8 @@ class nisarBaseHDF():
             min_val, max_val = autoScaleRange(arr, 100)
         arr = np.clip(arr, min_val, max_val)
         arr = 255 * (arr - min_val) / (max_val - min_val)
+        # Avoid warning with nans to uint8
+        arr[np.isnan(data)] = 0
         arr = arr.astype(np.uint8)
         gdal_type = gdal.GDT_Byte
         # Create an in-memory dataset

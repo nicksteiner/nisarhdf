@@ -455,7 +455,11 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         if tiff:
             aOrigin += getattr(self, f'{self.lookType}AzimuthSize') * dA
             dA = -dA
-        return [rOrigin, dR, 0., aOrigin, 0., dA]
+        geoTransform = [rOrigin, dR, 0., aOrigin, 0., dA]
+        if self.downsampleFactor > 1:
+            geoTransform = self.rescale_geoTransform(geoTransform,
+                                                     self.downsampleFactor)
+        return geoTransform
 #
 # GrIMP Specific Code
 #

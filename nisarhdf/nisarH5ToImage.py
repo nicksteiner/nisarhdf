@@ -30,10 +30,10 @@ fieldsDict = {'ROFF': {'pixelOffsets': ['slantRangeOffset',
                                          'ionospherePhaseScreen',
                                          'ionospherePhaseScreenUncertainty',
                                          'digitalElevationModel']},
-              'RSLC': {None: ['HHHH', 
-                              'VVVV',
-                              'HVHV', 
-                              'VHVH']},
+              'RSLC': {None: ['HH', 
+                              'VV',
+                              'HV', 
+                              'VH']},
               'GCOV': {None: ['HHHH', 
                               'VVVV',
                               'HVHV', 
@@ -133,7 +133,7 @@ def parseCommandLine():
     parser.add_argument('productName', type=str,
                         help='NISAR h5 product (file path, s3, or https)')
     parser.add_argument('output', type=str, nargs="?",
-                        help='Root name for ouput (not required for --info)')
+                        help='Root name for ouput. Band (e.g., .unwrappedPhase) and file type (e.g., .tiff) will be appended. (Not required for --info)')
     parser.add_argument('--info', action="store_true",
                         help='Print summary info only')
     parser.add_argument('--quickLook', action="store_true",
@@ -144,8 +144,8 @@ def parseCommandLine():
                         help='NISAR product type (e.g., RUNW, GUNW etc) '
                         '[parse from product path]',
                         choices=productTypes)
-    parser.add_argument('--frequency', type=str, default='frequencyA',
-                        help='Frequency ', choices=['frequencyA', 'frequencyB'])    
+    parser.add_argument('--frequencyB', action="store_true",
+                        help='Select frequencyB [frequencyA] ')    
     parser.add_argument('--dB', action="store_true",
                         help='Output results in dB (GCOV only)')  
     parser.add_argument('--sigma0', action="store_true",
@@ -185,6 +185,8 @@ def parseCommandLine():
     specialKeywords(myArgs, ['GCOV'], ['dB', 'sigma0'], args)
     specialKeywords(myArgs, ['ROFF', 'GOFF'], ['scaleToPixels'], args)
     specialKeywords(myArgs, ['GUNW'], ['wrapped'], args)
+    myArgs['frequency'] = {False: 'frequencyA',
+                           True: 'frequencyB'}[args.frequencyB]
     #
     processHDFOpenKeywords(args, myArgs)
     #
@@ -196,7 +198,7 @@ def parseCommandLine():
     #
     # args that need no checking
     for arg in ['productName', 'output', 'polarization',
-                'outputFormat', 'info', 'frequency',
+                'outputFormat', 'info',
                 'downsampleFactor', 'quickLook']:
         myArgs[arg] = getattr(args, arg)
     myArgs['ros3'] = True
@@ -305,7 +307,6 @@ def outputData(myArgs, myProduct):
     #if myArgs['product'] in ['GCOV']: 
      #   keywords = {'dB': myArgs['dB'], 'sigma0': myArgs['sigma0']}
         #print(keywords)
-    keywords['downsampleFactor'] = myArgs['downsampleFactor']
     #
     #for myArgs[]
     tiff, driverName = {'GTiff': [True, 'GTiff'],
@@ -335,16 +336,20 @@ def printInfo(myArgs, myProduct):
     '''
     #
     # List defaults
-    if myArgs["product"] in ['GCOV']:
+    if myArgs["product"] in ['GCOV', 'RSLC']:
         print("\n\033[1mDefault polarization:\033[0m")
         for pol in myProduct.polarizations:
             print(pol, end=' ')
         print('')
         print('\033[1mAvailable fields: \033[0m', end='\n')
-        for pol in myProduct.covTerms:
+        if myArgs["product"] in ['GCOV']:
+            prodSpecTerms = myProduct.covTerms
+        else:
+            prodSpecTerms = myProduct.polarizations
+        for pol in prodSpecTerms:
             print(f'{pol}')
         for field in fieldsDict[myArgs["product"]][None]:
-            if field not in ['HHHH', 'VVVV', 'HVHV', 'VHVH']:
+            if field[0:2] not in ['HH', 'VV', 'HV', 'VH']:
                 print(f'{field}')
     else: 
         for productType in defaultFieldsDict[myArgs["product"]]:
@@ -355,8 +360,7 @@ def printInfo(myArgs, myProduct):
                 print(f'{field}')
             print(f'\033[1mAvailable fields for {productType}: \033[0m', end='\n')
             for field in fieldsDict[myArgs["product"]][productType]:
-                if field not in ['HHHH', 'VVVV', 'HVHV', 'VHVH']:
-                     print(f'{field}')
+                print(f'{field}')
     #
     myProduct.printParams()
 
@@ -385,6 +389,7 @@ def run():
                       fields=myArgs['fields'],
                       useRos3=myArgs['ros3'],
                       page_buf_size=1 * 1024**3,
+                      downsampleFactor=myArgs['downsampleFactor'],
                       **myArgs['hdfOpenKeywords']
                       )
     read = datetime.now()
@@ -404,8 +409,8 @@ def run():
     net_after = psutil.net_io_counters()    
     bytes_sent = net_after.bytes_sent - net_before.bytes_sent
     bytes_recv = net_after.bytes_recv - net_before.bytes_recv
-    print(f"Bytes sent: {bytes_sent/1e6} MB")
-    print(f"Bytes received: {bytes_recv/1e6} MB")
+    print(f"Bytes sent: {bytes_sent/1e6:.3f} MB")
+    print(f"Bytes received: {bytes_recv/1e6:.3f} MB")
 
 if __name__ == "__main__":
     run()

@@ -227,12 +227,14 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
         else:
             yOrigin += self.ySize * np.abs(self.dy)
         #
-        return [xOrigin, self.dx, 0., yOrigin, 0., dy]
-
+        geoTransform = [xOrigin, self.dx, 0., yOrigin, 0., dy] 
+        if self.downsampleFactor > 1:
+            geoTransform = self.rescale_geoTransform(geoTransform,
+                                                     self.downsampleFactor)
+        return geoTransform
 #
 # GrIMP Specific Code
 #
-
     def getGeoCoordinates(self):
         '''
         Get Coordinate information (origin, size, and spacing) and asssemble
