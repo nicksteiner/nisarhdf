@@ -11,7 +11,7 @@ In particular, it simplifies access to NISAR data by allowing:
   - Save data and interpolated metadata cubes to binary or geotiff files, and
   - Write a .vrt file to link multiple data layers so they can be read back in as `xarray`.
 
-At present classes have been developed for **RSLC**, **ROFF**, **RUNW**, **RIFG**, **GOFF**, **GUNW**, and **GCOV** products. A tutorial notebook for each of these data types is included in the *Notebook* folder in this repository.
+At present classes have been developed for **RSLC**, **ROFF**, **RUNW**, **RIFG**, **GOFF**, **GUNW**, and **GCOV** products. A tutorial notebook for each of these data types is included in the [Notebook](https://github.com/fastice/nisarhdf/blob/main/Notebooks) folder of this repository.
 
 ## Command line utility nisarh5toimage
 
@@ -22,3 +22,6 @@ At present classes have been developed for **RSLC**, **ROFF**, **RUNW**, **RIFG*
 - Produce an accompanying `.vrt` field that makes it easy to import multiband products into Python (e.g., `rioxarray`) or GIS packages.
 - Downsample products (useful for large hi-res GCOV products).
 - Produce quickLook PNG files with `.vrt` for geospatial information.
+
+
+The [nisarh5toimageTutorial](https://github.com/fastice/nisarhdf/blob/main/Notebooks/nisarh5toimageTutorial.ipynb) notebook in the [Notebook](https://github.com/fastice/nisarhdf/blob/main/Notebooks) directory of this respository includes several examples of how to use this program.
