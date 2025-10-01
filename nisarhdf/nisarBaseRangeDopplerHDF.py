@@ -104,7 +104,7 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
     # Parameters for multi-look products RUNW and RIFG.
     #
 
-    def getMLSlantRange(self):
+    def getMLSlantRange(self, SLC=True):
         '''
         Compute near/center/far ranges for a multi-look image
 
@@ -125,8 +125,9 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         self.MLRangePixelSize = self.SLCRangePixelSize * self.NumberRangeLooks
         #
         bands = self.h5[self.product][self.bands]
-        self.slantRangeData = np.array(
-                 bands[self.frequency][self.productType]['slantRange'])
+        if not SLC:
+            self.slantRangeData = np.array(
+                     bands[self.frequency][self.productType]['slantRange'])
 
     def getMLSize(self):
         '''
@@ -143,7 +144,7 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         self.MLAzimuthSize = int(
             np.floor(self.SLCAzimuthSize / self.NumberAzimuthLooks))
 
-    def getMLZeroDopplerTime(self, secondary=False):
+    def getMLZeroDopplerTime(self, secondary=False, SLC=False):
         '''
         Input y5 and return dictionary with zero Doppler spacing and
         first, middle, and last zero Doppler.
@@ -153,7 +154,9 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         None.
 
         '''
-        self.getSLCZeroDopplerTime(secondary=secondary)
+        if not SLC:
+            print('heredfdf')
+            self.getSLCZeroDopplerTime(secondary=secondary)
         #
         # get start, mid, and end times
         # Note computing from SLC since test products seem to have incorrect
@@ -172,8 +175,9 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
             seconds=np.around(self.MLFirstZeroDopplerTime, decimals=5)))
         #
         bands = self.h5[self.product][self.bands]
-        self.zeroDopplerTimeData = np.array(
-                 bands[self.frequency][self.productType]['zeroDopplerTime'])
+        if not SLC:
+            self.zeroDopplerTimeData = np.array(
+                     bands[self.frequency][self.productType]['zeroDopplerTime'])
 
     #
     # Interpolation and data cube methods
@@ -314,6 +318,8 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
 
         '''
         x, y = self.xyCube(slantRange, zdTime, z)
+        if self.epsg in [4326]:
+            return y, x
         lat, lon = self.xytoll(x, y)
         return lat, lon
 
@@ -396,6 +402,8 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
             for t in earlyLate:
                 x[i], y[i] = self.xyCube([r], [t], [0])
                 i += 1
+        if self.epsg in [4326]:
+            return y, x
         return x, y
 
     def _idCorners(self, x, y):
@@ -414,7 +422,9 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         '''
         # order from looping on range then azimuth in _getRectangle
         ll, ul, lr, ur = 0, 1, 2, 3
+        print('XY', x, y)
         lat, lon = self.xytoll(x, y)
+        print('lat, lon',lat, lon)
         # save in dict
         self.corners = {'ll': (lat[ll], lon[ll]), 'lr': (lat[lr], lon[lr]),
                         'ur': (lat[ur], lon[ur]), 'ul': (lat[ul], lon[ul])}
@@ -456,9 +466,10 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
             aOrigin += getattr(self, f'{self.lookType}AzimuthSize') * dA
             dA = -dA
         geoTransform = [rOrigin, dR, 0., aOrigin, 0., dA]
-        if self.downsampleFactor > 1:
+        if self.downsampleFactorRow > 1 or self.downsampleFactorCol > 1:
             geoTransform = self.rescale_geoTransform(geoTransform,
-                                                     self.downsampleFactor)
+                                                     self.downsampleFactorRow,
+                                                     self.downsampleFactorCol)
         return geoTransform
 #
 # GrIMP Specific Code
@@ -489,6 +500,8 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         # print(self.corners)
         geoJsonGeometry = geojson.Polygon(
             [[self.corners[x] for x in ['ll', 'ul', 'ur', 'lr', 'll']]])
+        #print(geoJsonGeometry)
+        print(self.corners)
 
         self.geodatGeojson = geojson.Feature(geometry=geoJsonGeometry,
                                              properties=self.geodatDict)

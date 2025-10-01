@@ -438,7 +438,7 @@ class nisarBaseHDF():
                                                            f"EPSG:{self.epsg}")
         return self.lltoxyXform.transform(lat, lon)
 
-    def xytoll(self, lat, lon):
+    def xytoll(self, x, y):
         '''
         Convert to lat/lon to xy
         '''
@@ -447,7 +447,7 @@ class nisarBaseHDF():
         if not hasattr(self, 'xytollXform'):
             self.xytollXform = pyproj.Transformer.from_crs(f"EPSG:{self.epsg}",
                                                            "EPSG:4326")
-        return self.xytollXform.transform(lat, lon)
+        return self.xytollXform.transform(x, y)
 
     #
     # Open hdf and extract parameters.
@@ -605,7 +605,14 @@ class nisarBaseHDF():
 
         '''
         # Update XMLs
-        self.downsampleFactor = downsampleFactor
+        #
+        if type(downsampleFactor) is dict:
+            self.downsampleFactorRow = downsampleFactor['downsampleFactorRow']
+            self.downsampleFactorCol = downsampleFactor['downsampleFactorColumn']
+        else:
+            self.downsampleFactorCol = downsampleFactor
+            self.downsampleFactorRow = downsampleFactor
+        #   
         for attr, value in zip(['referenceOrbitXML', 'secondaryOrbitXML'],
                                [referenceOrbitXML, secondaryOrbitXML]):
             if value is not None:
@@ -642,6 +649,7 @@ class nisarBaseHDF():
                          secondaryOrbit=secondaryOrbit,
                          noLoadData=noLoadData, fields=fields,
                          **keywords)   
+        #
         if closeH5:
             self.close()
 
@@ -924,13 +932,18 @@ class nisarBaseHDF():
 
         '''
         # get frequency
-        if self.product not in ['GCOV']:
-            bands = self.h5[self.product][self.bands]
-        else:
+        cFreqName = 'centerFrequency'
+        if self.product in ['RSLC']:
+            bands = self.h5['RSLC']['swaths']
+            cFreqName = 'processedCenterFrequency'
+        elif self.product in ['GCOV']:
             bands = self.h5[self.product]['metadata']['sourceData']['swaths']
+        else:
+            bands = self.h5[self.product][self.bands]
+        
         #
         self.centerFrequency = self.toScalar(
-                bands[self.frequency]['centerFrequency'])
+                bands[self.frequency][cFreqName])
         # And compute the wavelength
         self.Wavelength = self.cLight / self.centerFrequency
 
@@ -1025,7 +1038,7 @@ class nisarBaseHDF():
                 #print(f'getting layers for {productField}')
                 self.getLayers([productField])
 
-    def getImageData(self, productField, layer=None, useNumpy=True):
+    def getImageData(self, productField, layer=None, useNumpy=True, power=True):
         '''
         Get image data corresponding to productField and create copy as
         self.productField.
@@ -1064,15 +1077,16 @@ class nisarBaseHDF():
         if layer is not None:
             data = data[layer]
         #
-     
         # set data value
         if useNumpy:
             data = np.array(data[productField])  
         else:
             data = data.get(productField)
-        #    
-        if self.downsampleFactor > 1:
-            data = self.downsample(data, self.downsampleFactor)
+        #
+        if power and data.dtype in ['complex64', 'c8']:
+            data = (np.abs(data).astype(np.float32))**2
+        #  
+        data = self.downsample(data)
         setattr(self, productField, data)
 
     def getInterferogramPixelOffsets(self):
@@ -1130,7 +1144,7 @@ class nisarBaseHDF():
             self.noDataLocations = np.array([])
 
     def loadData(self, fields, useNumpy=True, noLoadData=False,
-                 resetFields=True):
+                 resetFields=True, power=False):
         '''
           Load data to np arrays.
 
@@ -1150,6 +1164,7 @@ class nisarBaseHDF():
         None.
 
         '''
+        print('useNumpy', useNumpy, fields, noLoadData)
         if resetFields:
             self.dataFields = []
         for field in fields:
@@ -1157,12 +1172,10 @@ class nisarBaseHDF():
             if noLoadData:
                 setattr(self, field, None)
             else:
-                self.getImageData(field, useNumpy=useNumpy)
-        if noLoadData:
-            self.noDataLocations = np.array([])
-        else:
-            if len(fields) > 0:
-                self.noDataLocations = np.isnan(getattr(self, fields[0]))
+                self.getImageData(field, useNumpy=useNumpy, power=power)
+            #
+        if len(fields) > 0 and not noLoadData:
+            self.noDataLocations = np.isnan(getattr(self, fields[0]))
 
     def findNoDataValue(self, band, tiff):
         '''
@@ -2442,7 +2455,7 @@ class nisarBaseHDF():
         t = self.SMLocateZDECEF(position, velocity, slantRange, z)
         return self.ECEFtoLL(*list(t))
 
-    def downsample(self, arr, factor):
+    def downsample(self, arr):
         '''
         Downsample arr by factor, which will be forced to be integere
 
@@ -2459,17 +2472,18 @@ class nisarBaseHDF():
             Downsampled array.
 
         '''
+        if self.downsampleFactorCol == 1 and self.downsampleFactorRow == 1:
+            return arr
         m, n = arr.shape
         # print(m, n)
-        mNew, nNew = m // factor, n // factor
+        mNew, nNew = m // self.downsampleFactorRow, n // self.downsampleFactorCol
+        #
         # print(mNew, nNew)
-        return arr[:mNew*factor,
-                   :nNew*factor].reshape(mNew,
-                                         factor,
-                                         nNew,
-                                         factor).mean(axis=(1, 3))
+        return arr[:mNew*self.downsampleFactorRow,
+                   :nNew*self.downsampleFactorCol,].reshape(mNew, self.downsampleFactorRow,
+                                                            nNew, self.downsampleFactorCol).mean(axis=(1, 3))
 
-    def rescale_geoTransform(self, gt, factor):
+    def rescale_geoTransform(self, gt, rowFactor, colFactor):
         """
         Modify a GDAL GeoTransform after downsampling by an integer factor.
 
@@ -2487,11 +2501,11 @@ class nisarBaseHDF():
         gt0, gt1, gt2, gt3, gt4, gt5 = gt
         return (
             gt0,           # origin x stays the same
-            gt1 * factor,  # pixel width increases
+            gt1 * colFactor,  # pixel width increases
             gt2,           # rotation unchanged
             gt3,           # origin y stays the same
             gt4,           # rotation unchanged
-            gt5 * factor   # pixel height increases (still neg. for north-up)
+            gt5 * rowFactor   # pixel height increases (still neg. for north-up)
         )
 
     def _computeLookError(self, elook, ph, pv, position, slantRange,

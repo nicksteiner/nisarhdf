@@ -52,7 +52,7 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
             self.productParams.append(f'{self.lookType}{param}')
         self.isSecondary = False
 
-    def parseParams(self, noLoadData=False, **keywords):
+    def parseParams(self, noLoadData=False, fields=None, downsampleFactor=1, useNumpy=False, power=False, **keywords):
         '''
         Parse all the params needed for offsets
 
@@ -76,6 +76,8 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
         self.orbit = self.parseStateVectors(XMLOrbit=self.referenceOrbitXML)
         self.getSceneCenterSatelliteHeight()
         self.getSLCSize(**keywords)
+        self.NumberRangeLooks = 1
+        self.NumberAzimuthLooks = 1
         # self.getZeroDopplerTime()
         # self.getSize(offsets=True)
         # self.getSingleLookPixelSizeOffsets()
@@ -83,9 +85,40 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
         # self.effectivePRF()
         polarizations = self.h5[self.product][self.bands][self.frequency][
                                   'listOfPolarizations']
-        self.fieldDict = [self.parseString(x) for x in polarizations]
+        if fields is None:    
+            fields = [self.parseString(x) for x in polarizations]
+        # load data
+        print('loading as power', power)
+        self.loadData(fields, useNumpy=useNumpy, power=power, noLoadData=noLoadData)
+        self.NumberRangeLooks *= self.downsampleFactorCol
+        self.NumberAzimuthLooks *= self.downsampleFactorRow
+        #
+        
+        print(downsampleFactor)
+        self.getMLSize()
+        self.getMLZeroDopplerTime(SLC=True)
+        self.getCorrectedTime()
+        self.getMLSlantRange()
+        self.getCorners()
+        self.getCenterLatLon()
+        self.getRangeErrorCorrection()
+        self.getTimeToFirstSample()
+        self.getSkewOffsets()
+        #myRSLC.getCenterIncidenceAngle()
+        self.getSquint()
+        self.getDeltaT()
+        self.getCenterLatLon()
+        
+        self.getSceneCenterSatelliteHeight()
+        self.getWavelength()
+        _, self.MLIncidenceCenter = self.computeAngles(self.MLCenterRange,
+                                                            self.MLMidZeroDopplerTime, 
+                                                            np.array([0]),
+                                                            degrees=False)
+        
 
-        self.loadData(self.fieldDict, useNumpy=False,  noLoadData=noLoadData)
+
+    
         
     def writeSLC(self, fileName, frequency='frequencyA', dataType='>c8'):
         '''

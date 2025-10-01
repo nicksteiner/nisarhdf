@@ -220,17 +220,19 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
 
         '''
         xOrigin = self.x0 - self.dx / 2
-        yOrigin = self.y0 - self.dy / 2
+        
         dy = self.dy
         if grimp and not tiff:
             dy *= -1
+            yOrigin = self.y0 - self.dy / 2
         else:
-            yOrigin += self.ySize * np.abs(self.dy)
+            yOrigin = self.y0 + (self.ySize + 0.5) * np.abs(self.dy)
         #
         geoTransform = [xOrigin, self.dx, 0., yOrigin, 0., dy] 
-        if self.downsampleFactor > 1:
+        if self.downsampleFactorRow > 1  or self.downsampleFactorCol > 1:
             geoTransform = self.rescale_geoTransform(geoTransform,
-                                                     self.downsampleFactor)
+                                                     self.downsampleFactorCol,
+                                                     self.downsampleFactorRow)
         return geoTransform
 #
 # GrIMP Specific Code
@@ -275,9 +277,11 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
         #
         self.xytoll = pyproj.Transformer.from_crs(f"EPSG:{self.epsg}",
                                                   "EPSG:4326").transform
+       
         self.centerLat, self.centerLon = self.xytoll(
-            self.x0 + 0.5 * self.dx * self.xSize,
-            self.y0 + 0.5 * self.dy * self.ySize)
+            self.x0 + 0.5 * np.abs(self.dx) * self.xSize,
+            self.y0 + 0.5 * np.abs(self.dy) * self.ySize)
+        #
 
     def writeGeodat(self, filename):
         '''

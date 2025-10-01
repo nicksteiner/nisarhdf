@@ -123,6 +123,12 @@ def myerror(message,myLogger=None):
         myLogger.logError(message)
     sys.exit()
 
+def positive_int(value):
+    ivalue = int(value)
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError(f"{value} must be an integer > 0")
+    return ivalue
+
 def parseCommandLine():
     '''
     Handle command line args
@@ -158,9 +164,8 @@ def parseCommandLine():
                         choices=['HH', 'VV', 'HV', 'VH'],
                         help='Polarization for \n\n\033[1mnon-GCOV\n\n\033[0m '
                         'products [first like pol]')
-    parser.add_argument('--downsampleFactor', type=int, default=None,
-                        choices=[2, 4, 8],
-                        help='Reduce resolution by 1/subsampleFactor (GCOV only) [full res]')
+    parser.add_argument('--downsampleFactor', type=positive_int, default=None,
+                        help='Reduce resolution by 1/subsampleFactor (integer > 0) [full res]')
     parser.add_argument('--fields', type=str, default=[], nargs='+',                       
                         help='Select fields including GCOV covariance terms (e.g., '
                         'HHHH, HVHV), use all for everything. '
@@ -203,15 +208,19 @@ def parseCommandLine():
         myArgs[arg] = getattr(args, arg)
     myArgs['ros3'] = True
     #
-    if myArgs['quickLook'] and myArgs['product'] in ['ROFF', 'GOFF']:
-        print(f'quickLooks not supported for ROFF and GOFF')
-        myArgs['quickLook'] = False
-    elif myArgs['quickLook']:
-        if myArgs['downsampleFactor'] == 0:
-             myArgs['downsampleFactor'] = quickLookDefaultDownsampleFactors[myArgs['product']]
-             if myArgs['product'] in ['GUNW'] and myArgs['wrapped']:
+    if myArgs['quickLook']:
+        # No quick look support yet for these products
+        if myArgs['product'] in ['ROFF', 'GOFF']:
+            print(f'quickLooks not supported for ROFF and GOFF')
+            myArgs['quickLook'] = False
+        # If not specified, use default
+        elif myArgs['downsampleFactor'] is None:
+            myArgs['downsampleFactor'] = quickLookDefaultDownsampleFactors[myArgs['product']]
+            # for GUNW wrapped use 4x large
+            if myArgs['product'] in ['GUNW'] and myArgs['wrapped']:
                  myArgs['downsampleFactor'] *= 4
-    if myArgs['downsampleFactor'] is None:
+    # None quicklook default
+    elif myArgs['downsampleFactor'] is None:
         # If not set by one of the defaults, default to 1
         myArgs['downsampleFactor'] = 1
         
