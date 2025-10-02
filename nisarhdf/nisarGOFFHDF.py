@@ -64,6 +64,7 @@ class nisarGOFFHDF(nisarBaseGeocodedHDF):
         self.getPolarization(polarization)
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
+        self.getRangeBandWidth()
         self.getOrbitPassDirection()
         self.parseRefDate()
         self.getGeoCoordinates()

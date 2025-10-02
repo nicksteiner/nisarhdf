@@ -47,12 +47,19 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
                                           bands=bands,
                                           bytOrder=byteOrder)
         self.lookType = 'SLC'
-        self.productParams = []
+        self.productParams = ['NumberRangeLooks', 'NumberAzimuthLooks']
         for param in self.RDParams:
             self.productParams.append(f'{self.lookType}{param}')
         self.isSecondary = False
 
-    def parseParams(self, noLoadData=False, fields=None, downsampleFactor=1, useNumpy=False, power=False, **keywords):
+    def parseParams(self,
+                    noLoadData=False,
+                    fields=None,
+                    downsampleFactor={'downsampleFactorRow': 1,
+                                      'downsampleFactorColumn': 1},
+                    useNumpy=False,
+                    power=False,
+                    **keywords):
         '''
         Parse all the params needed for offsets
 
@@ -78,11 +85,7 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
         self.getSLCSize(**keywords)
         self.NumberRangeLooks = 1
         self.NumberAzimuthLooks = 1
-        # self.getZeroDopplerTime()
-        # self.getSize(offsets=True)
-        # self.getSingleLookPixelSizeOffsets()
-        # self.getEPSG()
-        # self.effectivePRF()
+        #
         polarizations = self.h5[self.product][self.bands][self.frequency][
                                   'listOfPolarizations']
         if fields is None:    
@@ -90,11 +93,10 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
         # load data
         print('loading as power', power)
         self.loadData(fields, useNumpy=useNumpy, power=power, noLoadData=noLoadData)
-        self.NumberRangeLooks *= self.downsampleFactorCol
+        self.NumberRangeLooks *= self.downsampleFactorColumn
         self.NumberAzimuthLooks *= self.downsampleFactorRow
-        #
-        
-        print(downsampleFactor)
+        #  
+        self.getRangeBandWidth()
         self.getMLSize()
         self.getMLZeroDopplerTime(SLC=True)
         self.getCorrectedTime()
@@ -115,7 +117,11 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
                                                             self.MLMidZeroDopplerTime, 
                                                             np.array([0]),
                                                             degrees=False)
-        
+        #
+        # if the product has been multilooked, add ML params
+        if self.NumberRangeLooks > 1 or self.NumberAzimuthLooks > 1:
+            for param in self.RDParams:
+                self.productParams.append(f'ML{param}')
 
 
     

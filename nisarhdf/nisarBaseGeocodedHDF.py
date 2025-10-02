@@ -229,9 +229,9 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
             yOrigin = self.y0 + (self.ySize + 0.5) * np.abs(self.dy)
         #
         geoTransform = [xOrigin, self.dx, 0., yOrigin, 0., dy] 
-        if self.downsampleFactorRow > 1  or self.downsampleFactorCol > 1:
+        if self.downsampleFactorRow > 1  or self.downsampleFactorColumn > 1:
             geoTransform = self.rescale_geoTransform(geoTransform,
-                                                     self.downsampleFactorCol,
+                                                     self.downsampleFactorColumn,
                                                      self.downsampleFactorRow)
         return geoTransform
 #

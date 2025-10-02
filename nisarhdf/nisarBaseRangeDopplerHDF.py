@@ -104,7 +104,7 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
     # Parameters for multi-look products RUNW and RIFG.
     #
 
-    def getMLSlantRange(self, SLC=True):
+    def getMLSlantRange(self, SLC=False):
         '''
         Compute near/center/far ranges for a multi-look image
 
@@ -125,9 +125,11 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         self.MLRangePixelSize = self.SLCRangePixelSize * self.NumberRangeLooks
         #
         bands = self.h5[self.product][self.bands]
-        if not SLC:
-            self.slantRangeData = np.array(
-                     bands[self.frequency][self.productType]['slantRange'])
+        # Compute slant range coordinates for ML image
+        dR = self.SLCRangePixelSize * self.NumberRangeLooks
+        N = int(np.round((self.MLFarRange - self.MLNearRange) / dR + 1))
+        self.slantRangeData = np.linspace(self.MLNearRange, self.MLFarRange, N)
+      
 
     def getMLSize(self):
         '''
@@ -155,7 +157,6 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
 
         '''
         if not SLC:
-            print('heredfdf')
             self.getSLCZeroDopplerTime(secondary=secondary)
         #
         # get start, mid, and end times
@@ -422,9 +423,7 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         '''
         # order from looping on range then azimuth in _getRectangle
         ll, ul, lr, ur = 0, 1, 2, 3
-        print('XY', x, y)
         lat, lon = self.xytoll(x, y)
-        print('lat, lon',lat, lon)
         # save in dict
         self.corners = {'ll': (lat[ll], lon[ll]), 'lr': (lat[lr], lon[lr]),
                         'ur': (lat[ur], lon[ur]), 'ul': (lat[ul], lon[ul])}
@@ -466,10 +465,10 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
             aOrigin += getattr(self, f'{self.lookType}AzimuthSize') * dA
             dA = -dA
         geoTransform = [rOrigin, dR, 0., aOrigin, 0., dA]
-        if self.downsampleFactorRow > 1 or self.downsampleFactorCol > 1:
+        if self.downsampleFactorRow > 1 or self.downsampleFactorColumn > 1:
             geoTransform = self.rescale_geoTransform(geoTransform,
                                                      self.downsampleFactorRow,
-                                                     self.downsampleFactorCol)
+                                                     self.downsampleFactorColumn)
         return geoTransform
 #
 # GrIMP Specific Code

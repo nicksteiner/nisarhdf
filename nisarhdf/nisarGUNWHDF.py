@@ -68,6 +68,7 @@ class nisarGUNWHDF(nisarBaseGeocodedHDF):
         #
         self.getOrbitAndFrame(**keywords)
         self.getNumberOfLooks()
+        self.getRangeBandWidth()
         self.getLookDirection()
         self.getOrbitPassDirection()
         self.parseRefDate()

@@ -74,8 +74,9 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
         self.getGranuleNames()
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
+        self.getRangeBandWidth()
         self.parseRefDate()
-        self.getNumberOfLooks(prodType='interferogram')
+        self.getNumberOfLooks()
         self.getSLCSlantRange()
         self.getSLCZeroDopplerTime(secondary=secondary)
         self.getMLSize()
@@ -126,7 +127,6 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
             self.secondary.frame = self.frame
             self.genGeodatProperties()
             if fields is None:
-                fields = ['slantRangeOffset', 'alongTrackOffset',
-                          'digitalElevationModel']
+                fields = ['coherenceMagnitude', 'wrappedInterferogram']
             self.loadData(fields, noLoadData=noLoadData)
 

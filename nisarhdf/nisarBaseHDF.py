@@ -115,6 +115,7 @@ class nisarBaseHDF():
                              'centerLat',
                              'centerLon',
                              'referenceGranule',
+                             'rangeBandwidth',
                              'SLCNearRange', 'SLCFarRange',
                              'SLCFirstZeroDopplerTime',
                              'SLCLastZeroDopplerTime']
@@ -573,7 +574,8 @@ class nisarBaseHDF():
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
                 referenceOrbit=None, secondaryOrbit=None, noLoadData=False,
                 closeH5=False, page_buf_size=10*1024**3,
-                useRos3=False, fields=None, downsampleFactor=1,
+                useRos3=False, fields=None,
+                downsampleFactor={'downsampleFactorRow': 1,'downsampleFactorColumn': 1},
                 **keywords):
         '''
         Open hdf and save self.h5Full and truncate to self.h5
@@ -608,9 +610,9 @@ class nisarBaseHDF():
         #
         if type(downsampleFactor) is dict:
             self.downsampleFactorRow = downsampleFactor['downsampleFactorRow']
-            self.downsampleFactorCol = downsampleFactor['downsampleFactorColumn']
+            self.downsampleFactorColumn = downsampleFactor['downsampleFactorColumn']
         else:
-            self.downsampleFactorCol = downsampleFactor
+            self.downsampleFactorColumn = downsampleFactor
             self.downsampleFactorRow = downsampleFactor
         #   
         for attr, value in zip(['referenceOrbitXML', 'secondaryOrbitXML'],
@@ -686,7 +688,7 @@ class nisarBaseHDF():
             self.h5['identification']['lookDirection']).lower()
         self.lookSign = {'right': 1.0, 'left': -1.0}[self.LookDirection]
 
-    def getNumberOfLooks(self, prodType='interferogram'):
+    def getNumberOfLooks(self):
         '''
         Get number of looks in range and azimuth for multilook product.
 
@@ -709,6 +711,34 @@ class nisarBaseHDF():
                 productType[self.frequency]['numberOfRangeLooks'])
             self.NumberAzimuthLooks = self.toScalar(
                 productType[self.frequency]['numberOfAzimuthLooks'])
+
+
+    def getRangeBandWidth(self):
+        '''
+        Get range bandwidth.
+
+        Returns
+        -------
+        None.
+
+        '''
+        # break up long dict
+        metadata = self.h5[self.product]['metadata']
+        if self.product in ['GCOV', 'RSLC']:
+            if self.product == 'GCOV':
+                parameters = metadata['sourceData']
+            else:
+                parameters = self.h5[self.product]
+            productType = parameters['swaths']
+            self.rangeBandwidth = self.toScalar(
+                productType[self.frequency]['acquiredRangeBandwidth'])
+            return
+        # Other products
+        parameters = metadata['processingInformation']['parameters']
+        productType = parameters[self.productType]
+        #
+        self.rangeBandwidth = self.toScalar(
+                productType[self.frequency]['rangeBandwidth'])
 
     def getOrbitAndFrame(self, referenceOrbit=None,
                          secondaryOrbit=None, frame=None, track=None, **kywds):
@@ -1164,7 +1194,6 @@ class nisarBaseHDF():
         None.
 
         '''
-        print('useNumpy', useNumpy, fields, noLoadData)
         if resetFields:
             self.dataFields = []
         for field in fields:
@@ -1234,7 +1263,8 @@ class nisarBaseHDF():
                   geojsonNameSecondary=None,
                   noSuffix=False, driverName='COG',
                   quickLook=False,
-                  sigma0=False):
+                  sigma0=False,
+                  vrtFile=None):
         '''
         Write data to binary or tiff file for all data types. Non offset
         results are saved as individual files (filenameRoot.band[.tif] which
@@ -1269,6 +1299,8 @@ class nisarBaseHDF():
             use a lower-left corner geotransform. The default is False.
         noSuffix : bool, optional
             Don't append filename suffix (1 band only). The default is False.
+        vrtFile : str, optional
+            Override default name for non-offset data. The default is (filenameRoot.vrt).
         Offset Only
         ------------
         suffixes : list of str, optional
@@ -1324,7 +1356,8 @@ class nisarBaseHDF():
                                      byteOrder=byteOrder,
                                      noSuffix=noSuffix,
                                      driverName=driverName,
-                                     quickLook=quickLook)
+                                     quickLook=quickLook,
+                                     vrtFile=vrtFile)
         else:
             if 'digitalElevationModel' in bands:
                 self._writeNonOffsetData(filenameRoot,
@@ -1496,7 +1529,7 @@ class nisarBaseHDF():
     def _writeNonOffsetData(self, filenameRoot, bands=None, tiff=True,
                             byteOrder='LSB', grimp=False, noSuffix=False,
                             driverName='COG', quickLook=False,
-                            sigma0=False):
+                            sigma0=False, vrtFile=None):
         '''
         Write non-offset data to binary or tiff file.
 
@@ -1521,6 +1554,8 @@ class nisarBaseHDF():
         driverName : str, optional
             Gdal driver name if writing to tiff. COG or GTiff. The default
             is 'COG'
+        vrtFile : str, optional
+            Override default name. The default is (filenameRoot.vrt).
         Returns
         -------
         None.
@@ -1571,7 +1606,9 @@ class nisarBaseHDF():
                                  band=band)
         # Write a vrt
         sy, sx = data.shape
-        writeMultiBandVrt(f'{filenameRoot}.vrt',
+        if vrtFile is None:
+            vrtFile = f'{filenameRoot}.vrt'
+        writeMultiBandVrt(vrtFile,
                           sx, sy,
                           sourceFiles,
                           descriptions,
@@ -2472,16 +2509,16 @@ class nisarBaseHDF():
             Downsampled array.
 
         '''
-        if self.downsampleFactorCol == 1 and self.downsampleFactorRow == 1:
+        if self.downsampleFactorColumn == 1 and self.downsampleFactorRow == 1:
             return arr
         m, n = arr.shape
         # print(m, n)
-        mNew, nNew = m // self.downsampleFactorRow, n // self.downsampleFactorCol
+        mNew, nNew = m // self.downsampleFactorRow, n // self.downsampleFactorColumn
         #
         # print(mNew, nNew)
         return arr[:mNew*self.downsampleFactorRow,
-                   :nNew*self.downsampleFactorCol,].reshape(mNew, self.downsampleFactorRow,
-                                                            nNew, self.downsampleFactorCol).mean(axis=(1, 3))
+                   :nNew*self.downsampleFactorColumn,].reshape(mNew, self.downsampleFactorRow,
+                                                            nNew, self.downsampleFactorColumn).mean(axis=(1, 3))
 
     def rescale_geoTransform(self, gt, rowFactor, colFactor):
         """

@@ -37,3 +37,4 @@ Repository = "https://github.com/fastice/nisarhdf"
 
 [project.scripts]
 nisarh5toimage = "nisarhdf.nisarH5ToImage:run"
+multilookrslc = "nisarhdf.multilookRSLC:run"

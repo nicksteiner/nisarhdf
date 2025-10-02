@@ -71,6 +71,7 @@ class nisarROFFHDF(nisarBaseRangeDopplerHDF):
         self.getPolarization(polarization)
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
+        self.getRangeBandWidth()
         self.getOrbitPassDirection()
         self.parseRefDate()
         self.getOffsetSize()
