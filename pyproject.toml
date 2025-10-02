@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nisarhdf"
-version = "0.0.3"
+version = "0.0.4"
 description = "Tools for NISAR GPS cal/val data"
 authors = [
     { name = "Ian Joughin", email = "irj@uw.edu" }
@@ -38,3 +38,4 @@ Repository = "https://github.com/fastice/nisarhdf"
 [project.scripts]
 nisarh5toimage = "nisarhdf.nisarH5ToImage:run"
 multilookrslc = "nisarhdf.multilookRSLC:run"
+s3ls = "nisarhdf.s3Listing:run"
