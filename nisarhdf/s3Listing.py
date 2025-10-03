@@ -1,6 +1,7 @@
 
 import argparse
 import subprocess
+import sys
 
 def parseCommandLine():
     parser = argparse.ArgumentParser(
@@ -65,7 +66,8 @@ def list_s3_tree(s3_uri, profile=None, maxLevels=None, level=0):
     try:
         result = subprocess.check_output(cmd_base + [s3_uri], text=True)
     except subprocess.CalledProcessError as e:
-        print(f"Error listing {s3_uri}: {e}")
+        print(f"\033[1;31mError: Check if {s3_uri} exists\033[0m")
+        sys.exit()
         return tree
 
     for line in result.splitlines():

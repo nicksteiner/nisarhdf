@@ -86,7 +86,7 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         '''
         swaths = self.h5[self.product]['swaths']
         self.polarizations = [x.decode("utf-8") for x in 
-            swaths[self.frequency]['listOfPolarizations']]       
+            swaths[self.frequency]['listOfPolarizations']] 
         
     # def getSlantRangeData(self):
     #     ''' Get slant range data '''
@@ -171,9 +171,10 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         self.MLMidZeroDopplerTime = (self.MLFirstZeroDopplerTime +
                                      self.MLLastZeroDopplerTime) * 0.5
         #
-        # compute the nominal time
+        # compute the nominal time, modulo 86400 to get 24 hour time
+        # for cases where data take time > 86400
         self.NominalTime = str(timedelta(
-            seconds=np.around(self.MLFirstZeroDopplerTime, decimals=5)))
+            seconds=np.around(self.MLFirstZeroDopplerTime % 86400., decimals=5)))
         #
         bands = self.h5[self.product][self.bands]
         if not SLC:
@@ -604,7 +605,9 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         '''
         # Half ML pixel correction
         timeCorrection = 0.5 * (self.NumberAzimuthLooks - 1)/self.PRF
-        correctedTime = self.MLFirstZeroDopplerTime - timeCorrection
+        # This being converted to calendar date, so wrap to obtain valid date
+        correctedTime = (self.MLFirstZeroDopplerTime - timeCorrection) % 86400.0
+       
         correctedTimeString = str(timedelta(
             seconds=np.around(correctedTime, decimals=6)))
         # get pieces

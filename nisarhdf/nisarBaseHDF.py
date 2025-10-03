@@ -1863,7 +1863,8 @@ class nisarBaseHDF():
         alpha = np.full(arr.shape, 255, dtype=np.uint8)
         alpha[np.isnan(data)] = 0
         # Scale based on band type
-        if band in ['coherenceMagnitude', 'HHHH', 'VVVV', 'HVHV', 'VHVH']:
+        if band in ['coherenceMagnitude', 'HHHH', 'VVVV', 'HVHV', 'VHVH',
+                    'HH', 'VV', 'HV', 'VH']:
             min_val, max_val = autoScaleRange(arr, 97)
         else:
             min_val, max_val = autoScaleRange(arr, 100)

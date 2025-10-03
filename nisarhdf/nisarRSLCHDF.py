@@ -86,10 +86,10 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
         self.NumberRangeLooks = 1
         self.NumberAzimuthLooks = 1
         #
-        polarizations = self.h5[self.product][self.bands][self.frequency][
-                                  'listOfPolarizations']
+        self.getPolarizations()
         if fields is None:    
-            fields = [self.parseString(x) for x in polarizations]
+            fields = self.polarizations
+        fields = [x for x in fields if x in self.polarizations]
         # load data
         print('loading as power', power)
         self.loadData(fields, useNumpy=useNumpy, power=power, noLoadData=noLoadData)

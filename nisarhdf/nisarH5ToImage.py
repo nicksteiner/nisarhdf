@@ -79,7 +79,7 @@ defaultFieldsDict = {'RSLC': {None: ['HH', 'VV', 'HV', 'VH']},
                      
                     }
 
-quickLookDefaultDownsampleFactors = {'RSLC': 1,
+quickLookDefaultDownsampleFactors = {'RSLC': 20,
                                      'ROFF': 1, # not used
                                      'RIFG': 8,
                                      'RUNW': 2,
@@ -144,8 +144,9 @@ def parseCommandLine():
                         help='Print summary info only')
     parser.add_argument('--quickLook', action="store_true",
                         help='Write a quick look PNG file (GCOV )')
-    #parser.add_argument('--ros3', action="store_true",
-    #                    help='Use ros3 for network (s3,https), slower, but more memory efficient')  
+    parser.add_argument('--ros3', action="store_true",
+                        help='Use ros3 rather than reading full file to memory for s3 and some https. '
+                        'Slower but uses less memory and network bandwidth')  
     parser.add_argument('--productFamily', type=str, default='',
                         help='NISAR product type (e.g., RUNW, GUNW etc) '
                         '[parse from product path]',
@@ -203,12 +204,17 @@ def parseCommandLine():
     #
     # args that need no checking
     for arg in ['productName', 'output', 'polarization',
-                'outputFormat', 'info',
+                'outputFormat', 'info', 'ros3',
                 'downsampleFactor', 'quickLook']:
         myArgs[arg] = getattr(args, arg)
-    myArgs['ros3'] = True
+    # Force 'ros3' for info
+    if myArgs['info']:
+        myArgs['ros3'] = True
     #
+    myArgs['power'] = False
     if myArgs['quickLook']:
+        if  myArgs['product'] in ['RSLC']:
+            myArgs['power'] = True
         # No quick look support yet for these products
         if myArgs['product'] in ['ROFF', 'GOFF']:
             print(f'quickLooks not supported for ROFF and GOFF')
@@ -223,7 +229,9 @@ def parseCommandLine():
     elif myArgs['downsampleFactor'] is None:
         # If not set by one of the defaults, default to 1
         myArgs['downsampleFactor'] = 1
-        
+    #
+    myArgs['downsampleFactor'] = {'downsampleFactorRow': myArgs['downsampleFactor'],
+                                  'downsampleFactorColumn': myArgs['downsampleFactor']}    
     #
     return myArgs
 
@@ -239,9 +247,11 @@ def  processHDFOpenKeywords(args, myArgs):
         if args.polarization is not None:
             myerror('--polarization is not valid for GCOV. \n'
                     'Polarization specified through fields (e.g --fields HHHH HVHV)')
-    else:
-        if myArgs['product'] not in ['RSLC']:
+    elif myArgs['product'] not in ['RSLC']:
             myArgs['hdfOpenKeywords']['polarization'] = args.polarization
+    elif myArgs['product'] in ['RSLC'] and args.quickLook:
+        # If just quickLook, compute power
+        myArgs['hdfOpenKeywords']['power'] = True
     #
     # Only offset products have layers
     if myArgs['product'] in ['GOFF', 'ROFF']:
@@ -397,7 +407,8 @@ def run():
                       noLoadData=myArgs['info'],
                       fields=myArgs['fields'],
                       useRos3=myArgs['ros3'],
-                      page_buf_size=1 * 1024**3,
+                      page_buf_size=1024**3,
+                      useNumpy=False,
                       downsampleFactor=myArgs['downsampleFactor'],
                       **myArgs['hdfOpenKeywords']
                       )
