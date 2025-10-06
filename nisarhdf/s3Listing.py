@@ -24,7 +24,7 @@ def parseCommandLine():
                     help='Only show files created after specified data YYYY-MM-DD')
     # Flat flag
     parser.add_argument('--flat', action='store_true',
-                    help='Print files as a flat list of full paths instead of a tabbed hierarchy')
+                    help='Print files as a flat list of full paths instead of a hierarchy')
     # Long flag
     parser.add_argument('--long', action='store_true',
                     help='Print all file information (date, size)')
@@ -44,6 +44,9 @@ def parseCommandLine():
     return args.s3link, searchKeywords, printKeywords, args.flat
     
 def human_size(num_bytes):
+    '''
+    Convert num_bytes to format like ls -h
+    '''
     for unit in ["B","K","M","G","T","P","E"]:
         if abs(num_bytes) < 1024.0:
             return f"{num_bytes:6.1f}{unit}"
@@ -51,15 +54,16 @@ def human_size(num_bytes):
     return f"{num_bytes:7.1f}Z"  # fall back for huge numbers
 
 def is_s3_dir(s3_uri, profile=None):
+    '''
+    Make sure is directory. Add trailing slash if it is.
+    '''
     # Ensure command
     cmd = ["aws", "s3", "ls"]
     if profile:
         cmd += ["--profile", profile]
-
     # If already ends with /, it's a directory
     if s3_uri.endswith("/"):
         return True
-
     # Try listing with trailing slash
     try:
         subprocess.check_output(cmd + [s3_uri + "/"], text=True)
@@ -68,6 +72,9 @@ def is_s3_dir(s3_uri, profile=None):
         return False
 
 def normalize_key(s3_uri, key):
+    '''
+    Assemble full path, avoiding any redudancies.
+    '''
     # Parse bucket + prefix
     parsed = urlparse(s3_uri)
     bucket = parsed.netloc
@@ -136,7 +143,6 @@ def list_s3_tree_recursive(s3_uri, profile=None):
                 current["files"].append(full_key)
                 current["info"].append(f"{date_str} {human_size(size)}")
                 current["date"].append(datetime.strptime(date_str, "%Y-%m-%d"))
-
     else:
         # Single file
         try:
@@ -148,7 +154,6 @@ def list_s3_tree_recursive(s3_uri, profile=None):
                     size_str = parts[2]
                     key = " ".join(parts[3:])
                     size = int(size_str)
-
                     tree["files"].append(s3_uri)
                     tree["info"].append(f"{date_str} {human_size(size)}")
                     tree["date"].append(datetime.strptime(date_str, "%Y-%m-%d"))
@@ -178,6 +183,8 @@ def print_s3_tree(tree, name="", level=0,
         Indentation level.
     long : bool
         Print all file info.
+    createdAfter: datestr
+        Only return files with creation dates earlier than given date. 
     """
     indent = " " * level
 
