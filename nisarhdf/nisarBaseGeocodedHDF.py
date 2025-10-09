@@ -151,6 +151,10 @@ class nisarBaseGeocodedHDF(nisarBaseHDF):
                                        self.ensureNP(z).flatten()))
                               ).reshape(self.ensureNP(xGrid).shape)
         if maskNoData is not None:
+            # Only compute when needed
+            if self.noDataLocations is None and len(self.dataFields) > 0:
+                self.noDataLocations = np.isnan(getattr(self, self.dataFields[0]))
+            #
             result[self.noDataLocations] = np.nan
         return result
 

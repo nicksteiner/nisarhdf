@@ -24,7 +24,7 @@ import boto3
 import requests
 import io
 import matplotlib.colors as mcolors
-
+#import psutil
 gdal.UseExceptions()
 
 gdalTypes = {'float32': gdal.GDT_Float32,
@@ -107,6 +107,7 @@ class nisarBaseHDF():
         # this only get set true for GCOV
         self.dB = False
         self.sigma0 = False
+        self.noDataLocations = None
         #
         self.commonParams = ['track', 
                              'referenceOrbit',
@@ -642,7 +643,7 @@ class nisarBaseHDF():
                   'non-optimized access')
         # Truncate to remove tags common to all
         self.h5 = self.h5Full['science'][self.sar]
-        
+        #    
         self.getPolarizations()
         # Set image name
         self.ImageName = os.path.basename(hdfFile)
@@ -1166,13 +1167,12 @@ class nisarBaseHDF():
                 setattr(self, layerType, np.stack(layerData))
             else:
                 setattr(self, layerType, None)
+        #
         if not noLoadData:
             tmp = np.squeeze(
                 getattr(self, layerTypes[0])[len(layers) - 1, :, :])
             self.noDataLocations = np.isnan(tmp)
-        else:
-            self.noDataLocations = np.array([])
-
+     
     def loadData(self, fields, useNumpy=True, noLoadData=False,
                  resetFields=True, power=False):
         '''
@@ -1203,8 +1203,8 @@ class nisarBaseHDF():
             else:
                 self.getImageData(field, useNumpy=useNumpy, power=power)
             #
-        if len(fields) > 0 and not noLoadData:
-            self.noDataLocations = np.isnan(getattr(self, fields[0]))
+        #if len(fields) > 0 and not noLoadData:
+         #   self.noDataLocations = np.isnan(getattr(self, fields[0]))
 
     def findNoDataValue(self, band, tiff):
         '''
@@ -1736,6 +1736,67 @@ class nisarBaseHDF():
         del(dst_ds)
         del(dst_ds2)
         gc.collect()
+        
+    def write_dataset_to_bin(self, data, out_filename,
+                         dtype=None, byte_order='LSB',
+                         no_data_value=None,
+                         chunk_bytes=512 * 1024 * 1024):  # 512 MB chunks
+        """
+        Efficiently stream an already-open h5py dataset (`data`) to a binary file,
+        reading in blocks that are aligned to the dataset's chunk boundaries.
+        """
+
+    
+        nrows = data.shape[0]
+        row_size = np.prod(data.shape[1:]) * data.dtype.itemsize
+        dtype = np.dtype(dtype or data.dtype)
+    
+        # --- Determine the row chunk size from the dataset ---
+        if data.chunks is not None:
+            row_chunk = data.chunks[0]
+        else:
+            row_chunk = 1  # contiguous datasets have no chunks
+    
+        # --- Compute rows_per_chunk aligned to chunk boundaries ---
+        rows_per_chunk = max(1, chunk_bytes // row_size)
+        # Align to a multiple of row_chunk
+        rows_per_chunk = max(row_chunk, (rows_per_chunk // row_chunk) * row_chunk)
+        print(f"Writing {nrows} rows in blocks of {rows_per_chunk} rows (aligned to {row_chunk})...")
+        with open(out_filename, 'wb') as fout:
+            for start in range(0, nrows, rows_per_chunk):
+                end = min(nrows, start + rows_per_chunk)
+    
+                # Adjust start and end to stay on chunk boundaries if possible
+                # (except for the last block)
+                if end < nrows:
+                    end = (end // row_chunk) * row_chunk
+    
+                block = data[start:end]  # h5py reads efficiently by chunk
+                # Convert dtype if needed
+                if block.dtype != dtype:
+                    block = block.astype(dtype, copy=False)
+    
+                # Replace NaNs if requested
+                if no_data_value is not None and np.issubdtype(dtype, np.floating):
+                    np.nan_to_num(block, copy=False, nan=no_data_value)
+    
+                # Swap byte order if requested
+                if byte_order == 'MSB':
+                    block.byteswap(True)
+                    block = block.view(block.dtype.newbyteorder('='))
+    
+                # Write binary block
+                block.tofile(fout)
+
+                #net_after = psutil.net_io_counters()    
+                #bytes_sent = net_after.bytes_sent - net_before.bytes_sent
+                #bytes_recv = net_after.bytes_recv - net_before.bytes_recv
+                
+                
+                print(f"\rWrote rows {start}-{end} ({(end / nrows) * 100:.1f}%)", end='', flush=True)
+                
+        print("\nDone.")
+
 
     def _writeBinaryImageData(self, filename, data, dataType=None,
                               byteOrder="LSB", noDataValue=-2.e9, grimp=False, **keywords):
@@ -1772,17 +1833,28 @@ class nisarBaseHDF():
             # Flip geocoded images for grimp
             data = np.flipud(data)
             self.writeGeodat(f'{filename}.geodat')
-        # write line by line to avoid loading a large h5 all t once
-        with open(filename, 'w') as fpOut:
-            for line in data:
-                x1 = line.astype(dataType)
-                # replace nans with noDataValue
-                x1[np.isnan(x1)] = noDataValue
-                # Swap byte order if MSB
+        #
+        # Open output
+        # Numpy, so just dump whole array
+        if isinstance(data, np.ndarray):
+            with open(filename, 'wb') as fpOut:
+            
+                if dataType not in ['complex64']:
+                   data[np.isnan(data)] = noDataValue  
                 if byteOrder == "MSB":
-                    x1.byteswap(True)
-                # Save data
-                x1.tofile(fpOut)
+                    data.byteswap(True)
+                    data = data.view(data.dtype.newbyteorder('='))
+                data.tofile(fpOut)
+            # h5, so write line by line to avoid loading a large h5 all t once
+            # This is slow but uses little mem
+        else:
+            self.write_dataset_to_bin(data,
+                                      filename,
+                                      dtype=dataType,
+                                      byte_order=byteOrder,
+                                      no_data_value=noDataValue,
+                                      chunk_bytes=2048 * 1024 * 1024)  # GB chunks
+              
 
     def _writePNG(self, filename, data, band=None):
         '''

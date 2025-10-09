@@ -10,6 +10,8 @@ import nisarhdf
 from datetime import datetime
 import sys
 import psutil
+import tracemalloc
+import atexit
 
 productTypes = ['RSLC', 'ROFF', 'RIFG', 'RUNW', 'GCOV', 'GUNW', 'GOFF' ]
 
@@ -129,6 +131,16 @@ def positive_int(value):
         raise argparse.ArgumentTypeError(f"{value} must be an integer > 0")
     return ivalue
 
+def human_size(num_bytes):
+    '''
+    Convert num_bytes to format like ls -h
+    '''
+    for unit in ["B","K","M","G","T","P","E"]:
+        if abs(num_bytes) < 1024.0:
+            return f"{num_bytes:6.1f}{unit}"
+        num_bytes /= 1024.0
+    return f"{num_bytes:7.1f}Z"  # fall back for huge numbers
+    
 def parseCommandLine():
     '''
     Handle command line args
@@ -146,7 +158,9 @@ def parseCommandLine():
                         help='Write a quick look PNG file (GCOV )')
     parser.add_argument('--ros3', action="store_true",
                         help='Use ros3 rather than reading full file to memory for s3 and some https. '
-                        'Slower but uses less memory and network bandwidth')  
+                        'Slower but uses less memory')  
+    parser.add_argument('--conserveMem', action="store_true",
+                        help='Save memory by not converting HDF to numpy at the expense of speed')  
     parser.add_argument('--productFamily', type=str, default='',
                         help='NISAR product type (e.g., RUNW, GUNW etc) '
                         '[parse from product path]',
@@ -256,6 +270,11 @@ def  processHDFOpenKeywords(args, myArgs):
     # Only offset products have layers
     if myArgs['product'] in ['GOFF', 'ROFF']:
         myArgs['hdfOpenKeywords']['layers'] = [f'layer{x}' for x in args.layers]
+    #
+    if args.conserveMem:
+        myArgs['hdfOpenKeywords']['useNumpy'] = False
+    else:
+        myArgs['hdfOpenKeywords']['useNumpy'] = True
 
 
 def reconcileFields(args, myArgs):
@@ -384,10 +403,22 @@ def printInfo(myArgs, myProduct):
     myProduct.printParams()
 
 
+
+tracemalloc.start()
+
+def report_peak():
+    current, peak = tracemalloc.get_traced_memory()
+    print('\n\033[1mMemory Usage: \033[0m', end='\n')
+    print(f"Current memory usage: {human_size(current)}")
+    print(f"Peak memory usage: {human_size(peak)}")
+
+atexit.register(report_peak)
+
 def run():
     ''' 
     Main driver for program
     '''
+    tracemalloc.start()
     myArgs = parseCommandLine()
     net_before = psutil.net_io_counters()
     # Debug
@@ -407,13 +438,13 @@ def run():
                       noLoadData=myArgs['info'],
                       fields=myArgs['fields'],
                       useRos3=myArgs['ros3'],
-                      page_buf_size=1024**3,
-                      useNumpy=False,
+                      page_buf_size=2*1024**3,
                       downsampleFactor=myArgs['downsampleFactor'],
                       **myArgs['hdfOpenKeywords']
                       )
     read = datetime.now()
     #
+    print(f'Data loaded')
     # print info and return for --info
     if myArgs['info']:
         printInfo(myArgs, myProduct)
@@ -421,16 +452,16 @@ def run():
         outputData(myArgs, myProduct)  
     write = datetime.now()
     print('\n\033[1mRun time: \033[0m', end='\n')
-    print('Load data', read-start)
-    print('Write data', write-read)
+    print(f'Load data: {read-start}')
+    print(f'Write data: {write-read}')
     print('Total', write-start)
     #
     print('\n\033[1mNetwork traffic: \033[0m', end='\n')
     net_after = psutil.net_io_counters()    
     bytes_sent = net_after.bytes_sent - net_before.bytes_sent
     bytes_recv = net_after.bytes_recv - net_before.bytes_recv
-    print(f"Bytes sent: {bytes_sent/1e6:.3f} MB")
-    print(f"Bytes received: {bytes_recv/1e6:.3f} MB")
+    print(f"Bytes sent: {human_size(bytes_sent)}")
+    print(f"Bytes received: {human_size(bytes_recv)}")
 
 if __name__ == "__main__":
     run()
