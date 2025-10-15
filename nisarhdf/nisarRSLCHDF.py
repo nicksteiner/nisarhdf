@@ -117,6 +117,11 @@ class nisarRSLCHDF(nisarBaseRangeDopplerHDF):
                                                             self.MLMidZeroDopplerTime, 
                                                             np.array([0]),
                                                             degrees=False)
+        _, self.SLCIncidenceCenter = self.computeAngles(self.SLCCenterRange,
+                                                            self.SLCMidZeroDopplerTime, 
+                                                            np.array([0]),
+                                                            degrees=False)
+        
         #
         # if the product has been multilooked, add ML params
         if self.NumberRangeLooks > 1 or self.NumberAzimuthLooks > 1:

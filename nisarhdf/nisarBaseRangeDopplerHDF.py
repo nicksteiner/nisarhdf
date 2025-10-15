@@ -438,9 +438,9 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         None.
 
         '''
-        lat, lon = self.RDtoLatLon([self.MLCenterRange],
-                                   [self.MLMidZeroDopplerTime],
-                                   [0])
+        centerRange = getattr(self, f'{self.lookType}CenterRange')
+        centerTime = getattr(self, f'{self.lookType}MidZeroDopplerTime')
+        lat, lon = self.RDtoLatLon([centerRange], [centerTime], [0])
         self.CenterLatLon = [lat[0], lon[0]]
         # for compatability with geocoded
         self.centerLat = lat[0]
