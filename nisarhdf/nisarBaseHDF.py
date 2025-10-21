@@ -6,12 +6,23 @@ Created on Thu Feb  1 08:47:03 2024
 @author: ian
 """
 from abc import ABCMeta, abstractmethod
+import os
 import h5py
 import numpy as np
 import pyproj
+
+env_proj = os.environ['HOME'] + '/micromamba/envs/{}/share/proj'.format(os.environ['CONDA_DEFAULT_ENV'])
+os.environ['PROJ_LIB'] = env_proj
+# Inform pyproj about the dir too
+from pyproj import datadir
+datadir.set_data_dir(env_proj)
+print('PROJ_LIB set to', os.environ['PROJ_LIB'])
+print('pyproj datadir:', datadir.get_data_dir())
 from osgeo import gdal, osr
+print('GDAL version:', gdal.__version__)
+print('sample files in PROJ dir:', sorted(os.listdir(env_proj))[:10])
+
 from scipy import optimize
-import os
 from nisarhdf.nisarOrbit import nisarOrbit
 import geopandas as gpd
 import rasterio

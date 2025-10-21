@@ -1,0 +1,12 @@
+*.pyc
+__pycache__/
+
+.env
+.vscode/
+.idea/
+tmp_cgcov_cogs/
+.DS_Store
+
+tmp_gcov_cogs_stac/
+tmp_gcov_cogs/
+Notebooks/output/
