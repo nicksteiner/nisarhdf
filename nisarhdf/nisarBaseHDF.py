@@ -11,7 +11,7 @@ import h5py
 import numpy as np
 import pyproj
 
-env_proj = os.environ['HOME'] + '/micromamba/envs/{}/share/proj'.format(os.environ['CONDA_DEFAULT_ENV'])
+env_proj = os.environ['HOME'] + '/micromamba/envs/{}/share/proj'.format('nisarhdf_py311')
 os.environ['PROJ_LIB'] = env_proj
 # Inform pyproj about the dir too
 from pyproj import datadir
@@ -32,6 +32,7 @@ from nisarhdf.nisarhdfPlottingTools import autoScaleRange
 import gc
 # import s3fs
 import boto3
+from boto3.s3.transfer import TransferConfig
 import requests
 import io
 import matplotlib.colors as mcolors
@@ -506,7 +507,8 @@ class nisarBaseHDF():
         s3_response.raise_for_status()
 
         self.memory_file = io.BytesIO()
-        for chunk in s3_response.iter_content(chunk_size=1048576):
+        # Use larger chunks for better throughput (default 1 MiB -> 8 MiB)
+        for chunk in s3_response.iter_content(chunk_size=8 * 1024 * 1024):
             self.memory_file.write(chunk)
         self.memory_file.seek(0)  # rewind
 
@@ -537,17 +539,30 @@ class nisarBaseHDF():
         if verbose:
             print(f"[INFO] Downloading s3://{bucket}/{key} into memory...")
 
-        # Set up boto3 session with temp credentials
+        # Set up boto3 session with temp credentials; let boto3 resolve region
         session = boto3.Session(
             aws_access_key_id=self.s3cred.access_key,
             aws_secret_access_key=self.s3cred.secret_key,
             aws_session_token=self.s3cred.token,
-            region_name=os.getenv("AWS_REGION", "us-west-2"),
         )
         s3 = session.client("s3")
+        # Configure high-throughput multipart download
+        max_conc = int(os.getenv("NISAR_S3_MAX_CONCURRENCY", "10"))
+        part_size_mb = int(os.getenv("NISAR_S3_PART_SIZE_MB", "16"))
+        config = TransferConfig(
+            multipart_threshold=part_size_mb * 1024 * 1024,
+            multipart_chunksize=part_size_mb * 1024 * 1024,
+            max_concurrency=max_conc,
+            use_threads=True,
+        )
         # Download the file into a BytesIO buffer
         self.memory_file = io.BytesIO()
-        s3.download_fileobj(Bucket=bucket, Key=key, Fileobj=self.memory_file)
+        s3.download_fileobj(
+            Bucket=bucket,
+            Key=key,
+            Fileobj=self.memory_file,
+            Config=config,
+        )
         self.memory_file.seek(0)
 
         if verbose:
@@ -637,7 +652,7 @@ class nisarBaseHDF():
         self.hdfFile = hdfFile
         # Set page_buf_size for NISAR optimized HDFs
         try:
-            if 's3' in hdfFile:
+            if hdfFile.startswith('s3://'):
                 if useRos3:
                     self.h5Full = self._openS3(hdfFile, page_buf_size=page_buf_size)
                 else:

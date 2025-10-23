@@ -1,7 +1,14 @@
 *.pyc
 __pycache__/
+*.egg-info/
+dist/
+build/
+
+.eggs/
 
 .env
+.venv
+
 .vscode/
 .idea/
 tmp_cgcov_cogs/
@@ -12,3 +19,15 @@ tmp_gcov_cogs/
 Notebooks/output/
 
 scratch
+
+*.h5
+*.ini
+*.hdf5
+*.tif
+*.tiff
+*.nc
+*.zarr
+logs/
+coverage/
+
+NISAR_*

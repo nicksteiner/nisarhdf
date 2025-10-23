@@ -195,7 +195,7 @@ def _createBinaryVrt(newVRTFile, xSize, ySize, sourceFiles, descriptions,
                    "subclass=VRTRawRasterBand"]
         if dataType not in [gdal.GDT_Byte]:
             options.append(f"BYTEORDER={byteOrder}")
-        options.append(bytes(0))
+
         #
         vrt.AddBand(dataType, options=options)
         band = vrt.GetRasterBand(bandNumber)

@@ -129,10 +129,11 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         # check it has been converted already
         if self.backscatterType == 'sigma0':
             return 
+        # Apply sigma0 conversion to all power covariance terms present
+        sigma_terms = {'HHHH', 'VVVV', 'HHVV', 'VVHH', 'HVHV', 'VHVH'}
         for field in self.dataFields:
-            if field in ['HHHH', 'VVVV', 'HHVV', 'VVHH']:
-                setattr(self, field, self._computeSigma(getattr(self, field),
-                                                        rtcConversion))
+            if field in sigma_terms:
+                setattr(self, field, self._computeSigma(getattr(self, field), rtcConversion))
         self.backscatterType = 'sigma0'
 
     def _computeSigma(self, data, rtcConversion):
@@ -148,8 +149,10 @@ class nisarGCOVHDF(nisarBaseGeocodedHDF):
         '''
         if self.units == 'dB':
             return
+        # Convert all power covariance terms to dB if present
+        db_terms = {'HHHH', 'VVVV', 'HHVV', 'VVHH', 'HVHV', 'VHVH'}
         for field in self.dataFields:
-            if field in ['HHHH', 'VVVV', 'HHVV', 'VVHH']:
+            if field in db_terms:
                 setattr(self, field, self._computedB(getattr(self, field)))
         self.units = 'dB'
                 

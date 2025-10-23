@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
 Convert NISAR L2 GCOV granules into Cloud-Optimized GeoTIFFs and PySTAC items.
-Georeferencing and metadata are derived via the nisarhdf toolkit located at
-/home/ubuntu/nisarhdf to ensure consistency with mission utilities.
+Georeferencing and metadata are derived via the installed nisarhdf toolkit.
+
+
+N.Steiner, 2025
+
 """
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import pathlib
 import sys
+import time
 from typing import Dict, Iterable, Optional, Tuple
 
 import h5py
@@ -19,22 +24,25 @@ from osgeo import gdal, gdal_array, ogr, osr
 from pystac.extensions.projection import ProjectionExtension
 from pystac.utils import str_to_datetime
 
-NISARHDF_REPO = "/home/ubuntu/nisarhdf"
-if NISARHDF_REPO not in sys.path:
-    sys.path.insert(0, NISARHDF_REPO)
-
 import builtins  # noqa: E402
 import os as _os  # noqa: E402
 
 # nisarhdf modules expect 'os' to be available before their own import cycle.
 builtins.os = _os  # type: ignore[attr-defined]
 
+import nisarhdf as nisarhdf_pkg  # noqa: E402
 from nisarhdf.nisarGCOVHDF import nisarGCOVHDF  # noqa: E402
+
+# Resolve the actual repo path from the installed package (editable installs work too)
+NISARHDF_REPO = str(pathlib.Path(nisarhdf_pkg.__file__).parent)
 
 gdal.UseExceptions()
 gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
 
 PROCESSING_SOFTWARE = "nisarhdf"
+
+# Use a module-level logger that propagates to parent (e.g., Prefect's logger)
+logger = logging.getLogger(__name__)
 
 COG_CREATION_OPTIONS = [
     "COMPRESS=DEFLATE",
@@ -68,6 +76,7 @@ def decode_attr(value, *, decode_bytes: bool = False):
 
 
 def ensure_dir(path: pathlib.Path) -> None:
+    """Ensure a directory exists or create it."""
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -96,9 +105,11 @@ def derive_units(reader: nisarGCOVHDF, band: str, attr_units: Optional[str]) -> 
 def ensure_incidence_angle(reader: nisarGCOVHDF) -> None:
     """Populate incidence angle data and register it for export."""
     if getattr(reader, "incidenceAngle", None) is not None:
+        logger.debug("incidenceAngle already present: shape=%s", getattr(reader.incidenceAngle, "shape", None))
         return
 
     if not hasattr(reader, "xGrid") or not hasattr(reader, "yGrid"):
+        logger.debug("Setting up XY grid for incidence angle computation")
         reader.setupXYGrid()
 
     mask_array = None
@@ -108,10 +119,12 @@ def ensure_incidence_angle(reader: nisarGCOVHDF) -> None:
         mask_array = None
 
     if mask_array is not None:
+        logger.debug("Using mask for noDataLocations (mask==0)")
         reader.noDataLocations = mask_array == 0
     else:
         reader.noDataLocations = None
 
+    t0 = time.monotonic()
     z = np.zeros_like(reader.xGrid, dtype=np.float32)
     incidence = reader.incidenceAngleCube(
         reader.xGrid,
@@ -121,6 +134,7 @@ def ensure_incidence_angle(reader: nisarGCOVHDF) -> None:
         save=False,
     )
     if incidence is None:
+        logger.debug("incidenceAngleCube returned None; skipping incidence angle export")
         return
 
     incidence = np.asarray(incidence, dtype=np.float32)
@@ -131,11 +145,18 @@ def ensure_incidence_angle(reader: nisarGCOVHDF) -> None:
     if "incidenceAngle" not in reader.dataFields:
         reader.dataFields.append("incidenceAngle")
     reader.noDataValuesTiff["incidenceAngle"] = np.nan
+    dt = time.monotonic() - t0
+    logger.debug(
+        "Computed incidenceAngle: shape=%s dtype=%s elapsed=%.3fs",
+        incidence.shape,
+        incidence.dtype,
+        dt,
+    )
 
 
 def apply_metadata(
     ds: gdal.Dataset,
-    *,
+    *args,
     frequency: str,
     subdataset: str,
     epsg_value: Optional[int],
@@ -145,8 +166,18 @@ def apply_metadata(
     units: Optional[str],
     no_data: Optional[float],
     backscatter: Optional[str],
+     **kwargs
 ) -> None:
     """Apply dataset and band metadata while the dataset is open."""
+    logger.debug(
+        "Applying metadata: freq=%s band=%s epsg=%s units=%s nodata=%s backscatter=%s",
+        frequency,
+        band_name,
+        epsg_value,
+        units,
+        no_data,
+        backscatter,
+    )
     ds.SetMetadataItem("frequency", frequency)
     ds.SetMetadataItem("source_subdataset", subdataset)
     ds.SetMetadataItem("processing_software", PROCESSING_SOFTWARE)
@@ -155,6 +186,14 @@ def apply_metadata(
         ds.SetMetadataItem("backscatter_type", backscatter)
     if epsg_value is not None:
         ds.SetMetadataItem("proj_epsg", str(epsg_value))
+    
+    # Apply additional metadata from args and kwargs, to ds level only
+    for arg_name, arg_value in args:
+        if arg_value is not None:
+            ds.SetMetadataItem(arg_name, str(arg_value))
+    for arg_name, arg_value in kwargs.items():
+        if arg_value is not None:
+            ds.SetMetadataItem(arg_name, str(arg_value))
 
     band = ds.GetRasterBand(1)
     band.SetDescription(long_name or band_name)
@@ -169,6 +208,10 @@ def apply_metadata(
         band.SetMetadataItem("nodata_value", str(no_data))
 
     band.FlushCache()
+# what would be the direction of the flight
+derived_data = [
+   "incidenceAngle", "elevationAngle", "azimuthAngle", "depressionAngle"
+]
 
 
 def export_frequency_assets(
@@ -180,15 +223,59 @@ def export_frequency_assets(
     overwrite: bool,
     sigma0: bool,
     db: bool,
+    skip_incidence_angle: bool = False,
+    verbose: bool = False,
+    subset_window: Optional[Tuple[int, int, int, int]] = None,
 ) -> Dict[str, Dict[str, Optional[str]]]:
+    """
+    Export all bands for a frequency to COG files and return STAC asset metadata.
+    
+    Data flow:
+    - Converted bands (sigma0/dB): already in memory from openHDF, written directly via write_mem_cog
+    - Unconverted bands: GDAL reads directly from HDF5 via translate_subdataset_to_cog (no double-read)
+    - Derived bands (incidenceAngle): computed on-demand, written via write_mem_cog
+    - Fallback: if GDAL fails, load to memory via ensure_band_loaded and write_mem_cog
+    """
+    
+
+    logger.debug(
+        "Exporting frequency assets: freq=%s product=%s bands_group=%s",
+        freq_name,
+        getattr(reader, "product", None),
+        getattr(reader, "bands", None),
+    )
     group = reader.h5[reader.product][reader.bands][freq_name]
     freq_dir = output_root / h5_path.stem / freq_name
     ensure_dir(freq_dir)
 
-    ensure_incidence_angle(reader)
+    if not skip_incidence_angle:
+        ensure_incidence_angle(reader)
 
     epsg_value = int(reader.epsg) if reader.epsg is not None else None
-    geo_transform = reader.getGeoTransform(tiff=True)
+    base_gt = reader.getGeoTransform(tiff=True)
+    geo_transform = base_gt
+    if subset_window is not None:
+        xoff, yoff, xsize, ysize = subset_window
+        # Adjust geotransform for window: GT' = GT + [xoff*GT[1] + yoff*GT[2], 0, 0, xoff*GT[4] + yoff*GT[5]] on origins
+        geo_transform = (
+            float(base_gt[0]) + xoff * float(base_gt[1]) + yoff * float(base_gt[2]),
+            float(base_gt[1]),
+            float(base_gt[2]),
+            float(base_gt[3]) + xoff * float(base_gt[4]) + yoff * float(base_gt[5]),
+            float(base_gt[4]),
+            float(base_gt[5]),
+        )
+        logger.debug(
+            "Subset window: xoff=%d yoff=%d xsize=%d ysize=%d | adjusted_gt=%s",
+            xoff,
+            yoff,
+            xsize,
+            ysize,
+            geo_transform,
+        )
+    logger.debug("Geo: epsg=%s geo_transform=%s", epsg_value, tuple(float(v) for v in geo_transform))
+    
+    # Prepare derived sources like incidence angle
     derived_sources: Dict[str, np.ndarray] = {}
     derived_attrs: Dict[str, h5py.Dataset] = {}
     if hasattr(reader, "incidenceAngle"):
@@ -197,12 +284,29 @@ def export_frequency_assets(
 
     assets: Dict[str, Dict[str, Optional[str]]] = {}
     bands_to_process = list(dict.fromkeys(list(reader.dataFields) + list(derived_sources.keys())))
+    cov_terms = set(getattr(reader, "covTerms", []))
+    logger.debug(
+        "Bands to process (%d): %s | cov_terms=%s",
+        len(bands_to_process),
+        ",".join(bands_to_process),
+        list(cov_terms),
+    )
 
     for band in bands_to_process:
         dataset = group.get(band)
         is_derived = band in derived_sources
-        if not is_derived:
+        # If conversions were requested, export covariance terms from memory so the
+        # converted values (sigma0 and/or dB) are written to the COG instead of raw HDF5.
+        force_from_memory = (sigma0 or db) and (band in cov_terms)
+        logger.debug(
+            "Band=%s derived=%s force_from_memory=%s",
+            band,
+            is_derived,
+            force_from_memory,
+        )
+        if not is_derived and not force_from_memory:
             if not isinstance(dataset, h5py.Dataset) or dataset.ndim != 2:
+                logger.debug("Skipping band=%s (not 2D dataset)", band)
                 continue
 
         dst_path = freq_dir / f"{h5_path.stem}.{band}.tif"
@@ -210,12 +314,60 @@ def export_frequency_assets(
             dst_path.unlink()
 
         write_nodata: Optional[float] = None
-        if is_derived:
-            data_array = derived_sources[band]
-            attr_source = derived_attrs[band]
-            write_nodata = np.nan
-            dtype_str = str(data_array.dtype)
+        if is_derived or force_from_memory:
+            # If forcing from memory (converted covariance), pull data from the reader
+            # and keep attribute source from the original dataset for metadata.
+            if force_from_memory:
+                data_array = getattr(reader, band)
+                attr_source = dataset  # retain HDF5 attrs like long_name/description
+            else:
+                data_array = derived_sources[band]
+                attr_source = derived_attrs[band]
+            # Apply subset window slicing if requested
+            if subset_window is not None and data_array is not None:
+                xoff, yoff, xsize, ysize = subset_window
+                data_array = np.asarray(data_array)[yoff : yoff + ysize, xoff : xoff + xsize]
+            write_nodata = reader.findNoDataValue(band, tiff=True)
+            dtype_str = str(np.asarray(data_array).dtype)
             subdataset = f"DERIVED:{band}"
+            logger.debug(
+                "Band=%s write from memory: shape=%s dtype=%s nodata=%s subdataset=%s",
+                band,
+                np.asarray(data_array).shape,
+                dtype_str,
+                write_nodata,
+                subdataset,
+            )
+            # Fallback conversions in case upstream didn't apply
+            override_units: Optional[str] = None
+            override_backscatter: Optional[str] = None
+            if band in cov_terms:
+                if sigma0 and getattr(reader, "backscatterType", None) != "sigma0":
+                    try:
+                        rtc = getattr(reader, "rtcGammaToSigmaFactor")
+                        if rtc is not None:
+                            data_array = np.asarray(data_array, dtype=np.float32) * np.asarray(rtc, dtype=np.float32)
+                            override_backscatter = "sigma0"
+                    except Exception:
+                        pass
+                if db and getattr(reader, "units", None) != "dB":
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        data_array = 10.0 * np.log10(np.asarray(data_array, dtype=np.float32))
+                    override_units = "dB"
+            if verbose and (sigma0 or db) and band in cov_terms:
+                try:
+                    vmin = float(np.nanmin(data_array))
+                    vmax = float(np.nanmax(data_array))
+                    logger.debug(
+                        "writing converted %s from memory: units=%s, backscatter=%s, min/max=%.2f/%.2f",
+                        band,
+                        getattr(reader, "units", None),
+                        getattr(reader, "backscatterType", None),
+                        vmin,
+                        vmax,
+                    )
+                except Exception:
+                    pass
         else:
             data_array = None
             attr_source = dataset
@@ -225,12 +377,24 @@ def export_frequency_assets(
             subdataset = (
                 f'HDF5:"{h5_path}"://science/LSAR/{reader.product}/grids/{freq_name}/{band}'
             )
+            logger.debug(
+                "Band=%s stream via GDAL: dtype=%s nodata=%s subdataset=%s",
+                band,
+                dtype_str,
+                write_nodata,
+                subdataset,
+            )
 
         attr_long = decode_attr(attr_source.attrs.get("long_name"), decode_bytes=True) if attr_source is not None else None
         attr_desc = decode_attr(attr_source.attrs.get("description"), decode_bytes=True) if attr_source is not None else None
         attr_units = decode_attr(attr_source.attrs.get("units"), decode_bytes=True) if attr_source is not None else None
         units = derive_units(reader, band, attr_units)
         backscatter = getattr(reader, "backscatterType", None) if band in getattr(reader, "covTerms", []) else None
+        # Apply any overrides from fallback conversions
+        if 'override_units' in locals() and override_units is not None:
+            units = override_units
+        if 'override_backscatter' in locals() and override_backscatter is not None:
+            backscatter = override_backscatter
 
         stac_nodata = None
         if write_nodata is not None and not np.isnan(float(write_nodata)):
@@ -238,8 +402,16 @@ def export_frequency_assets(
 
         should_write = overwrite or not dst_path.exists()
 
+        logger.debug(
+            "Output target: %s (should_write=%s) units=%s backscatter=%s",
+            dst_path,
+            should_write,
+            units,
+            backscatter,
+        )
         if should_write:
             if data_array is not None:
+                logger.debug("Writing band=%s from memory to %s", band, dst_path)
                 write_mem_cog(
                     dst_path,
                     data_array,
@@ -256,6 +428,7 @@ def export_frequency_assets(
                 )
             else:
                 try:
+                    logger.debug("Translating subdataset to COG: %s -> %s", subdataset, dst_path)
                     translate_subdataset_to_cog(
                         subdataset,
                         dst_path,
@@ -268,14 +441,18 @@ def export_frequency_assets(
                         description=attr_desc,
                         units=units,
                         backscatter=backscatter,
+                        srcwin=subset_window,
                     )
                 except RuntimeError as err:
-                    print(
-                        f"  [warn] {freq_name}/{band}: {err} — falling back to in-memory write",
-                        file=sys.stderr,
+                    logger.warning(
+                        "%s/%s: %s — falling back to in-memory write",
+                        freq_name,
+                        band,
+                        err,
                     )
                     data_array = ensure_band_loaded(reader, band)
                     dtype_str = str(data_array.dtype)
+                    logger.debug("Fallback load band=%s dtype=%s shape=%s", band, dtype_str, np.asarray(data_array).shape)
                     write_mem_cog(
                         dst_path,
                         data_array,
@@ -291,7 +468,7 @@ def export_frequency_assets(
                         backscatter=backscatter,
                     )
         else:
-            print(f"Skipping existing {dst_path}", file=sys.stderr)
+            logger.info("Skipping existing %s", dst_path)
 
         assets[f"{freq_name}_{band}"] = {
             "href": str(dst_path.resolve()),
@@ -325,6 +502,14 @@ def write_mem_cog(
     backscatter: Optional[str],
 ) -> None:
     """Write a numpy array to COG using GDAL in-memory dataset."""
+    logger.debug(
+        "write_mem_cog: dst=%s shape=%s dtype=%s epsg=%s nodata=%s",
+        dst_path,
+        np.asarray(data).shape,
+        np.asarray(data).dtype,
+        epsg_value,
+        no_data_value,
+    )
     mem_driver = gdal.GetDriverByName("MEM")
     array = np.asarray(data)
     rows, cols = array.shape
@@ -364,6 +549,7 @@ def write_mem_cog(
         backscatter=backscatter,
     )
     out_ds.FlushCache()
+    logger.debug("write_mem_cog complete: %s", dst_path)
     out_ds = None
     mem_band = None
     mem_ds = None
@@ -382,13 +568,24 @@ def translate_subdataset_to_cog(
     description: Optional[str],
     units: Optional[str],
     backscatter: Optional[str],
+    srcwin: Optional[Tuple[int, int, int, int]] = None,
 ) -> None:
     """Use GDAL to translate an HDF5 subdataset directly to COG if supported."""
+    logger.debug("translate_subdataset_to_cog: %s -> %s", subdataset, dst_path)
     src = gdal.Open(subdataset, gdal.GA_ReadOnly)
     if src is None:
         raise RuntimeError(f"GDAL could not open {subdataset}")
 
-    out_ds = gdal.Translate(str(dst_path), src, options=COG_TRANSLATE_OPTIONS)
+    if srcwin is not None:
+        xoff, yoff, xsize, ysize = srcwin
+        logger.debug("GDAL translate with srcWin=%s", (xoff, yoff, xsize, ysize))
+        translate_opts = gdal.TranslateOptions(
+            format="COG", creationOptions=COG_CREATION_OPTIONS, srcWin=[xoff, yoff, xsize, ysize]
+        )
+    else:
+        translate_opts = COG_TRANSLATE_OPTIONS
+
+    out_ds = gdal.Translate(str(dst_path), src, options=translate_opts)
     if out_ds is None:
         raise RuntimeError(f"GDAL translation failed for {dst_path}")
 
@@ -415,6 +612,7 @@ def translate_subdataset_to_cog(
     )
 
     out_ds.FlushCache()
+    logger.debug("translate_subdataset_to_cog complete: %s", dst_path)
     out_ds = None
     src = None
 
@@ -488,19 +686,49 @@ def open_frequency_readers(
     *,
     sigma0: bool = False,
     db: bool = False,
+    downsample_factor: int = 1,
 ) -> Dict[str, nisarGCOVHDF]:
+    """
+    Open GCOV readers for all frequencies in the HDF5 file.
+    
+    Data loading strategy:
+    - If sigma0 or db conversions are requested, data is loaded eagerly (noLoadData=False)
+      because nisarGCOVHDF applies conversions during openHDF when those flags are set.
+    - Otherwise (noLoadData=True), data stays on disk and is loaded lazily when first accessed.
+    
+    All readers use consistent downsample_factor to avoid dimension mismatches.
+    """
+    logger.debug(
+        "open_frequency_readers: path=%s sigma0=%s db=%s downsample=%s",
+        h5_path,
+        sigma0,
+        db,
+        downsample_factor,
+    )
     readers: Dict[str, nisarGCOVHDF] = {}
     no_load_data = not (sigma0 or db)
     base_reader = nisarGCOVHDF()
-    base_reader.openHDF(str(h5_path), noLoadData=no_load_data, sigma0=sigma0, dB=db)
+    downsample_factor_inp = {'downsampleFactorRow': downsample_factor, 'downsampleFactorColumn': downsample_factor}
+    base_reader.openHDF(
+        str(h5_path),
+        noLoadData=no_load_data, sigma0=sigma0, dB=db, downsampleFactor=downsample_factor_inp
+    )
     readers[base_reader.frequency] = base_reader
     grid_group = base_reader.h5[base_reader.product]["grids"]
+    logger.debug("Base frequency=%s, available=%s", base_reader.frequency, list(grid_group.keys()))
     for freq in list(grid_group.keys()):
         if freq in readers:
             continue
         freq_reader = nisarGCOVHDF(frequency=freq)
-        freq_reader.openHDF(str(h5_path), noLoadData=no_load_data, sigma0=sigma0, dB=db)
+        freq_reader.openHDF(
+            str(h5_path),
+            noLoadData=no_load_data,
+            sigma0=sigma0,
+            dB=db,
+            downsampleFactor=downsample_factor_inp
+        )
         readers[freq] = freq_reader
+    logger.debug("Opened %d readers: %s", len(readers), list(readers.keys()))
     return readers
 
 
@@ -518,6 +746,7 @@ def build_item(
     stac_dir: pathlib.Path,
 ) -> None:
     if not metadata or not assets:
+        logger.debug("build_item: no metadata or assets; skipping STAC creation")
         return
 
     item_datetime = metadata.get("start") or metadata.get("end")
@@ -560,6 +789,7 @@ def build_item(
     item_path = stac_dir / f"{metadata['id']}.json"
     item.set_self_href(str(item_path))
     item.save_object(include_self_link=False, dest_href=str(item_path))
+    logger.debug("STAC item written: %s (assets=%d)", item_path, len(assets))
 
 
 def parse_args(argv: Optional[Iterable[str]] = None):
@@ -567,6 +797,8 @@ def parse_args(argv: Optional[Iterable[str]] = None):
         description="Export NISAR L2 GCOV bands to Cloud-Optimized GeoTIFF and generate PySTAC items."
     )
     parser.add_argument("inputs", nargs="+", type=pathlib.Path, help="Paths to GCOV .h5 granules.")
+    
+    
     parser.add_argument(
         "-o",
         "--output",
@@ -595,30 +827,85 @@ def parse_args(argv: Optional[Iterable[str]] = None):
         action="store_true",
         help="Convert backscatter covariance terms to decibels after other conversions.",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose debug logging (prints band-level conversion info).",
+    )
+    parser.add_argument(
+        "--no-incidence-angle",
+        action="store_true",
+        help="Skip incidence angle computation and export (faster processing).",
+    )
+    parser.add_argument(
+        "--downsample-factor",
+        type=int,
+        default=1,
+        help="Downsample factor for output COGs (default: 1, no downsampling).",
+    )
+    parser.add_argument(
+        "--srcwin",
+        nargs=4,
+        type=int,
+        metavar=("XOFF", "YOFF", "XSIZE", "YSIZE"),
+        help="Subset read window in pixels: x offset, y offset, width, height.",
+    )
+
+    args = parser.parse_args(argv)
+    if getattr(args, "srcwin", None) is not None:
+        # Convert list to tuple for downstream use
+        args.srcwin = tuple(int(v) for v in args.srcwin)  # type: ignore[attr-defined]
+    # Note: logging may not yet be configured; defer rich debug to main after setup
+    return args
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
     ensure_dir(args.output)
     ensure_dir(args.stac)
+    logger.debug(
+        "Args: inputs=%s output=%s stac=%s overwrite=%s sigma0=%s db=%s verbose=%s no_incidence=%s downsample=%d srcwin=%s",
+        [p.name for p in args.inputs],
+        args.output,
+        args.stac,
+        args.overwrite,
+        args.sigma0,
+        args.db,
+        args.verbose,
+        args.no_incidence_angle,
+        args.downsample_factor,
+        getattr(args, "srcwin", None),
+    )
 
     for h5_path in args.inputs:
         if not h5_path.exists():
-            print(f"Input not found: {h5_path}", file=sys.stderr)
+            logger.error("Input not found: %s", h5_path)
             continue
 
-        print(f"Processing {h5_path.name}…")
+        logger.info("Processing %s", h5_path.name)
         assets: Dict[str, Dict[str, Optional[str]]] = {}
         readers: Dict[str, nisarGCOVHDF] = {}
         item_metadata: Optional[Dict[str, Optional[str]]] = None
 
         try:
-            readers = open_frequency_readers(h5_path, sigma0=args.sigma0, db=args.db)
+            readers = open_frequency_readers(
+                h5_path, 
+                sigma0=args.sigma0, 
+                db=args.db, 
+                downsample_factor=args.downsample_factor
+                )
             base_reader = readers.get("frequencyA") or next(iter(readers.values()))
             item_metadata = extract_item_metadata(base_reader)
+            logger.debug(
+                "Item metadata extracted: id=%s epsg=%s time=[%s,%s]",
+                item_metadata.get("id") if item_metadata else None,
+                item_metadata.get("epsg") if item_metadata else None,
+                item_metadata.get("start") if item_metadata else None,
+                item_metadata.get("end") if item_metadata else None,
+            )
 
-            for freq_name in sorted(readers.keys()):
+            for freq_name in readers.keys():
                 reader = readers[freq_name]
                 try:
                     freq_assets = export_frequency_assets(
@@ -629,13 +916,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                         overwrite=args.overwrite,
                         sigma0=args.sigma0,
                         db=args.db,
+                        skip_incidence_angle=args.no_incidence_angle,
+                        verbose=args.verbose,
+                        subset_window=getattr(args, "srcwin", None),
                     )
                 except Exception as exc:
-                    print(f"  [warn] {freq_name}: {exc}", file=sys.stderr)
+                    logger.warning("%s: %s", freq_name, exc)
                     continue
                 assets.update(freq_assets)
+            logger.debug("Finished %s: wrote %d assets", h5_path.name, len(assets))
         except Exception as exc:
-            print(f"  [error] {h5_path.name}: {exc}", file=sys.stderr)
+            logger.error("%s: %s", h5_path.name, exc)
             assets = {}
             item_metadata = None
         finally:
@@ -646,5 +937,45 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     return 0
 
 
+def setup_logging(verbose: bool = False) -> None:
+    """
+    Configure logging for standalone CLI usage with rich pretty formatting.
+    When invoked from Prefect (or any framework), skip this and let the parent configure.
+    """
+    if logging.getLogger().hasHandlers():
+        # Already configured (e.g., by Prefect), respect parent setup
+        return
+    
+    level = logging.DEBUG if verbose else logging.INFO
+    
+    try:
+        from rich.logging import RichHandler
+        
+        logging.basicConfig(
+            level=level,
+            format="%(message)s",
+            datefmt="[%X]",
+            handlers=[RichHandler(
+                rich_tracebacks=True,
+                tracebacks_show_locals=verbose,
+                markup=True,
+                show_time=True,
+                show_level=True,
+                show_path=verbose,
+            )]
+        )
+    except ImportError:
+        # Fallback to basic logging if rich is not available
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Parse args early to set up logging before main() runs
+    import sys
+    args = parse_args(sys.argv[1:])
+    setup_logging(verbose=args.verbose)
+    raise SystemExit(main(sys.argv[1:]))

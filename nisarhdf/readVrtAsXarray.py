@@ -24,11 +24,33 @@ def readVrtAsXarray(filename, mask_and_scale=True):
     xarray : rioxarray.
         Data as a rioxarray.
     '''
-    xarray = rioxarray.open_rasterio(filename,
-                                     band_as_variable=True,
-                                     mask_and_scale=True)
-    # extract band names from 'Description' in each band
-    bandNames = [getattr(xarray[b], 'Description') for b in xarray.data_vars]
-    # Rename the bands
-    xarray = xarray.rename(dict(zip([x for x in xarray.data_vars], bandNames)))
+    xarray = rioxarray.open_rasterio(
+        filename,
+        band_as_variable=True,
+        mask_and_scale=mask_and_scale,
+    )
+    # Prefer GDAL band Description (and common alternatives); fallback to existing names
+    rename_map = {}
+    preferred_keys = (
+        "Description",
+        "description",
+        "DESCRIPTION",
+        "long_name",
+        "standard_name",
+        "name",
+    )
+    for var_name in list(xarray.data_vars):
+        attrs = getattr(xarray[var_name], "attrs", {}) or {}
+        new_name = None
+        for k in preferred_keys:
+            val = attrs.get(k)
+            if isinstance(val, str) and len(val) > 0:
+                new_name = val
+                break
+        if new_name is None:
+            new_name = var_name
+        rename_map[var_name] = new_name
+    if any(rename_map[k] != k for k in rename_map):
+        xarray = xarray.rename(rename_map)
     return xarray
+
