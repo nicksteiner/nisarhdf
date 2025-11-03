@@ -163,8 +163,8 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         # Note computing from SLC since test products seem to have incorrect
         # value
         self.MLFirstZeroDopplerTime = self.SLCFirstZeroDopplerTime + \
-            0.5 * (self.NumberAzimuthLooks - 1) / self.PRF
-        self.MLZeroDopplerTimeSpacing = self.NumberAzimuthLooks / self.PRF
+            0.5 * (self.NumberAzimuthLooks - 1) * self.SLCZeroDopplerTimeSpacing
+        self.MLZeroDopplerTimeSpacing = self.NumberAzimuthLooks * self.SLCZeroDopplerTimeSpacing
         self.MLLastZeroDopplerTime = \
             (self.MLFirstZeroDopplerTime +
              (self.MLAzimuthSize - 1) * self.MLZeroDopplerTimeSpacing)
@@ -351,11 +351,18 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         None.
 
         '''
-        setattr(self, f'{self.lookType}IncidenceCenter',
-                self.incidenceAngleCube(
-                    [getattr(self, f'{self.lookType}CenterRange')],
-                    [getattr(self, f'{self.lookType}MidZeroDopplerTime')],
-                    [0])[0].item())
+        slantRange = getattr(self, f'{self.lookType}CenterRange')
+        zeroDopplerTime = getattr(self,f'{self.lookType}MidZeroDopplerTime')
+        incAngle =  self.incidenceAngleCube([slantRange],
+                                            [zeroDopplerTime],
+                                            [0])[0].item()
+        # Fall back if cube fails
+        if np.isnan(incAngle):
+            elevAngle, incAngle = self.computeAngles(slantRange,
+                                                zeroDopplerTime,
+                                                0,
+                                                degrees=True)
+        setattr(self, f'{self.lookType}IncidenceCenter', incAngle)
     #
     # Corner and center points.
     #
@@ -402,7 +409,9 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         # ll, ul, lr, ur
         for r in nearFar:
             for t in earlyLate:
-                x[i], y[i] = self.xyCube([r], [t], [0])
+                # Changed to direct computation so secondary would work
+                x[i], y[i] = self.lltoxy(*self.RTtoLatLon(r, t ,0)[0:2])
+                #x[i], y[i] = self.xyCube([r], [t], [0])
                 i += 1
         if self.epsg in [4326]:
             return y, x
@@ -440,11 +449,15 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         '''
         centerRange = getattr(self, f'{self.lookType}CenterRange')
         centerTime = getattr(self, f'{self.lookType}MidZeroDopplerTime')
-        lat, lon = self.RDtoLatLon([centerRange], [centerTime], [0])
-        self.CenterLatLon = [lat[0], lon[0]]
+        #lat, lon = self.RDtoLatLon([centerRange], [centerTime], [0])
+        # Calculate to avoid problem with 
+        lat, lon, _ = self.RTtoLatLon(np.array([centerRange]), 
+                                      np.array([centerTime]),
+                                      np.array([0]))
+        self.CenterLatLon = [lat, lon]
         # for compatability with geocoded
-        self.centerLat = lat[0]
-        self.centerLon = lon[0]
+        self.centerLat = lat
+        self.centerLon = lon
 
     def getGeoTransform(self, tiff=True, grimp=True):
         '''
@@ -525,6 +538,14 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
         None.
 
         '''
+         # If secondary, pass too secondary and return
+        if secondary and hasattr(self, 'secondary'): 
+            if filename is None:
+                filename = f'geodat{self.NumberRangeLooks}x' \
+                    f'{self.NumberAzimuthLooks}.secondary.geojson'
+            self.secondary.writeGeodatGeojson(filename=filename, path=path)
+            return
+        #
         if not hasattr(self, 'geodatDict'):
             self.genGeodatProperties()
         if not hasattr(self, 'corners'):
@@ -536,13 +557,7 @@ class nisarBaseRangeDopplerHDF(nisarBaseHDF):
             [[self.corners[x] for x in ['ll', 'ul', 'ur', 'lr', 'll']]])
         self.geodatGeojson = geojson.Feature(geometry=geoJsonGeometry,
                                              properties=self.geodatDict)
-        # If secondary, pass too secondary and return
-        if secondary and hasattr(self, 'secondary'):
-            if filename is None:
-                filename = f'geodat{self.NumberRangeLooks}x' \
-                    f'{self.NumberAzimuthLooks}.secondary.geojson'
-            self.secondary.writeGeodatGeojson(filename=filename, path=path)
-            return
+       
         # Not secondary so continue
         if filename is None:
             filename = f'geodat{self.NumberRangeLooks}x' \
