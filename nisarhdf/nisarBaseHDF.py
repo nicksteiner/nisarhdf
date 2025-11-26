@@ -327,6 +327,8 @@ class nisarBaseHDF():
         if self.polarization is not None and self.product not in ['RSLC']:
             polString = f'{self.polarization}.'
         empty = False
+        if not hasattr(self, 'dataFields'):
+            return
         for field in self.dataFields:
             if hasattr(self, field):
                 status = ''
@@ -570,7 +572,7 @@ class nisarBaseHDF():
 
         return h5py.File(self.memory_file, "r")
        
-    def _openS3(self, s3link, page_buf_size=2 * 1024**3):
+    def _openS3(self, s3link, page_buf_size=2 * 1024**3, verbose=True):
         '''
         Open s3 link using ros3. Leaving to document, but switching to
         _openS3InMemory
@@ -581,14 +583,16 @@ class nisarBaseHDF():
         page_buf_size: int
             page buf size. The default is 2 * 1024**3.
         '''
-        print(f'page_buf_size {page_buf_size/1e6} MB')
+        if verbose:
+            print(f'page_buf_size {page_buf_size/1e6} MB')
         # *** Update one s3 2k token issue fixed ***
         if self.s3cred is None:
             self._getS3cred()
         #
         region = os.getenv("AWS_REGION", "<unknown>")
         # Open the file and return
-        print(f'Opening {s3link} with ros3')
+        if verbose:
+            print(f'Opening {s3link} with ros3')
         return h5py.File(name=s3link,
                          mode="r",
                          driver="ros3",
@@ -601,7 +605,7 @@ class nisarBaseHDF():
     def openHDF(self, hdfFile, referenceOrbitXML=None, secondaryOrbitXML=None,
                 referenceOrbit=None, secondaryOrbit=None, noLoadData=False,
                 closeH5=False, page_buf_size=10*1024**3,
-                useRos3=False, fields=None,
+                useRos3=False, fields=None, verbose=False,
                 downsampleFactor={'downsampleFactorRow': 1,'downsampleFactorColumn': 1},
                 **keywords):
         '''
@@ -654,11 +658,11 @@ class nisarBaseHDF():
         try:
             if hdfFile.startswith('s3://'):
                 if useRos3:
-                    self.h5Full = self._openS3(hdfFile, page_buf_size=page_buf_size)
+                    self.h5Full = self._openS3(hdfFile, page_buf_size=page_buf_size, verbose=verbose)
                 else:
-                    self.h5Full = self._openS3InMemory(hdfFile)
+                    self.h5Full = self._openS3InMemory(hdfFile, verbose=verbose)
             elif 'https' in hdfFile:
-                self.h5Full = self._openHTTPInMemory(hdfFile, verbose=False)
+                self.h5Full = self._openHTTPInMemory(hdfFile, verbose=verbose)
             else:
                 if not os.path.exists(hdfFile):
                     self.printError(f'{hdfFile} does not exist')
@@ -1512,7 +1516,7 @@ class nisarBaseHDF():
                 if scaleToPixels and band in self.scaleFactors:
                     scaleFactor = self.scaleFactors[band]
                 
-                bandData = np.squeeze(data[layer-1, :, :]) * scaleFactor
+                bandData = (np.squeeze(data[layer-1, :, :]) * scaleFactor).astype(np.float32)
                 #
                 dataTypes.append(gdalTypes[str(bandData.dtype)])
                 noDataValues.append(self.findNoDataValue(band, tiff))

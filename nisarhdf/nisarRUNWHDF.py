@@ -39,7 +39,7 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         None.
 
         '''
-        print('ref orbit', referenceOrbitXML)
+        # print('ref orbit', referenceOrbitXML)
         nisarBaseRangeDopplerHDF.__init__(self,
                                           sar=sar,
                                           product='RUNW',
@@ -75,7 +75,7 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         self.getOrbitAndFrame(**keywords)
         self.getLookDirection()
         self.parseRefDate()
-        self.getNumberOfLooks(prodType='interferogram')
+        self.getNumberOfLooks()
         self.getSLCSlantRange()
         self.getSLCZeroDopplerTime(secondary=secondary)
         self.getMLSize()
@@ -84,10 +84,9 @@ class nisarRUNWHDF(nisarBaseRangeDopplerHDF):
         self.getRangeErrorCorrection()
         if not secondary:
             self.getInterferogramPixelOffsets()
-            self.getMLZeroDopplerTime()
         else:
             self.ImageName = 'secondary'
-            self.getMLZeroDopplerTime(secondary=True)
+        self.getMLZeroDopplerTime(secondary=secondary)
             #
         self.getCorrectedTime()
         # Note if secondary, it will have been passed the reference (see below)

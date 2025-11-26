@@ -25,7 +25,7 @@ def parseCommandLine():
     parser.add_argument('--frequencyB', action="store_true",
                         help='Select frequencyB [frequencyA] ')    
     parser.add_argument('--dB', action="store_true",
-                        help='Output results in dB (GCOV only)')  
+                        help='Output results in dB')  
     parser.add_argument('--polarization', type=str, default='HH',
                         choices=['HH', 'VV', 'HV', 'VH'],
                         help='Polarization for \n\n\033[1mnon-GCOV\n\n\033[0m '

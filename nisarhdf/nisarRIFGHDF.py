@@ -40,7 +40,7 @@ class nisarRIFGHDF(nisarBaseRangeDopplerHDF):
         None.
 
         '''
-        print('ref orbit', referenceOrbitXML)
+        # print('ref orbit', referenceOrbitXML)
         nisarBaseRangeDopplerHDF.__init__(self,
                                           sar=sar,
                                           product='RIFG',
